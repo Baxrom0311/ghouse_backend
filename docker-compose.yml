@@ -1,0 +1,87 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: agroai_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: greenhouse_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d greenhouse_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - greenhouse_network
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: agroai_mqtt
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    networks:
+      - greenhouse_network
+
+  web:
+    build: .
+    container_name: agroai_web
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/greenhouse_db
+      MQTT_BROKER_HOST: mqtt
+      MQTT_BROKER_PORT: 1883
+      SECRET_KEY: dev-secret-key-for-local-mvp-only
+    depends_on:
+      db:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
+    volumes:
+      - ./app:/app/app
+      - ./worker:/app/worker
+      - ./alembic:/app/alembic
+    networks:
+      - greenhouse_network
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: agroai_worker
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/greenhouse_db
+      MQTT_BROKER_HOST: mqtt
+      MQTT_BROKER_PORT: 1883
+      SECRET_KEY: dev-secret-key-for-local-mvp-only
+    depends_on:
+      db:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
+    volumes:
+      - ./app:/app/app
+      - ./worker:/app/worker
+      - ./alembic:/app/alembic
+    networks:
+      - greenhouse_network
+    restart: unless-stopped
+
+volumes:
+  db_data:
+
+networks:
+  greenhouse_network:
+    driver: bridge
