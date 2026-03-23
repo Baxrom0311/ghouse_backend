@@ -27,12 +27,9 @@ class PasswordChangeRequest(BaseModel):
     new_password: str
 
 
-# @router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
-@router.post("/register", status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+@router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def register(user_data: UserCreate, db: Session = Depends(get_db)):
-    """Register a new user. **This endpoint is disabled temporarily!**"""
-    # Disable the endpoint temporarily
-    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    """Register a new user."""
     # Check if email already exists
     statement = select(User).where(User.email == user_data.email)
     existing_user = db.exec(statement).first()
@@ -58,7 +55,7 @@ def register(user_data: UserCreate, db: Session = Depends(get_db)):
 
 @router.post("/login", response_model=LoginResponse)
 def login(credentials: UserLogin, db: Session = Depends(get_db)):
-    """Login and get access token. Use `test1@example.com`, pass `test`"""
+    """Login and get an access token."""
     statement = select(User).where(User.email == credentials.email)
     user = db.exec(statement).first()
 

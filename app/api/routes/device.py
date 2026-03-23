@@ -2,7 +2,7 @@ from enum import Enum
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlmodel import Session
 
 from app.api.deps import get_authorized_greenhouse, get_db
@@ -17,6 +17,12 @@ router = APIRouter(prefix="/{greenhouse_id}/devices", tags=["devices"])
 class DeviceSettingsModel(BaseModel):
     min: float
     max: float
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> "DeviceSettingsModel":
+        if self.max <= self.min:
+            raise ValueError("max must be greater than min")
+        return self
 
 
 class SwitchableDeviceName(str, Enum):
@@ -97,9 +103,16 @@ def device_settings(
 ):
     """Update device settings."""
     topic_root, _, device = get_device_topic_root(db, greenhouse, device_name.value)
+    normalized_min = int(round(settings_payload.min))
+    normalized_max = int(round(settings_payload.max))
+    if normalized_max <= normalized_min:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="max must be greater than min after integer normalization",
+        )
     ok = mqtt_service.publish_device_command(
         f"{topic_root}/settings",
-        settings_payload.model_dump(),
+        {"min": normalized_min, "max": normalized_max},
     )
     if not ok:
         raise HTTPException(
@@ -107,8 +120,8 @@ def device_settings(
             detail="MQTT broker unavailable",
         )
 
-    device.min_value = settings_payload.min
-    device.max_value = settings_payload.max
+    device.min_value = normalized_min
+    device.max_value = normalized_max
     db.add(device)
     db.commit()
 

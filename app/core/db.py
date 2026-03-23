@@ -30,6 +30,7 @@ def build_unique_topic_id(
     if prefer_default and settings.DEFAULT_MQTT_TOPIC_ID not in used_topic_ids:
         candidate_topic_ids.append(settings.DEFAULT_MQTT_TOPIC_ID)
 
+    candidate_topic_ids.append(str(greenhouse_id))
     candidate_topic_ids.append(f"greenhouse-{greenhouse_id}")
 
     for candidate in candidate_topic_ids:

@@ -34,7 +34,7 @@ class Settings(BaseSettings):
             pass
 
     # temp
-    GENERATE_SAMPLE_DATA: bool = True
+    GENERATE_SAMPLE_DATA: bool = False
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"

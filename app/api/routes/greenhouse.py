@@ -24,6 +24,8 @@ from app.services.device_registry import ensure_greenhouse_devices
 from app.services.mqtt_service import mqtt_service
 
 router = APIRouter(prefix="/greenhouses", tags=["greenhouses"])
+INVALID_MQTT_TOPIC_ID_CHARS = {"/", "+", "#"}
+TOPIC_ID_UPDATE_SUFFIX = "/system/topic_id"
 
 
 def resolve_mqtt_topic_id(
@@ -42,6 +44,12 @@ def resolve_mqtt_topic_id(
             used_topic_ids,
             next_greenhouse_id,
             prefer_default=not used_topic_ids,
+        )
+
+    if any(char in topic_id for char in INVALID_MQTT_TOPIC_ID_CHARS):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="mqtt_topic_id must be a single MQTT topic segment",
         )
 
     statement = select(Greenhouse).where(Greenhouse.mqtt_topic_id == topic_id)
@@ -212,9 +220,21 @@ def edit_greenhouse(
 ):
     update_data = greenhouse_update.model_dump(exclude_unset=True)
     if "mqtt_topic_id" in update_data:
-        update_data["mqtt_topic_id"] = resolve_mqtt_topic_id(
+        new_topic_id = resolve_mqtt_topic_id(
             db, update_data["mqtt_topic_id"], greenhouse.id
         )
+        current_topic_id = (greenhouse.mqtt_topic_id or settings.DEFAULT_MQTT_TOPIC_ID).strip()
+        if new_topic_id != current_topic_id:
+            ok = mqtt_service.publish_device_command(
+                f"{current_topic_id}{TOPIC_ID_UPDATE_SUFFIX}",
+                new_topic_id,
+            )
+            if not ok:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="MQTT broker unavailable",
+                )
+        update_data["mqtt_topic_id"] = new_topic_id
 
     for key, value in update_data.items():
         setattr(greenhouse, key, value)

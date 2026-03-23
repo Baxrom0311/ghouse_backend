@@ -32,14 +32,22 @@ def ensure_greenhouse_devices(db: Session, greenhouse: Greenhouse) -> dict[str, 
 
         if device_name in devices:
             device = devices[device_name]
+            desired_min_value = (
+                device.min_value if device.min_value is not None else min_value
+            )
+            desired_max_value = (
+                device.max_value if device.max_value is not None else max_value
+            )
             if (
-                device.topic_root != expected_topic_root
-                or device.min_value != min_value
-                or device.max_value != max_value
+                device.type != device_type
+                or device.topic_root != expected_topic_root
+                or device.min_value != desired_min_value
+                or device.max_value != desired_max_value
             ):
+                device.type = device_type
                 device.topic_root = expected_topic_root
-                device.min_value = min_value
-                device.max_value = max_value
+                device.min_value = desired_min_value
+                device.max_value = desired_max_value
                 db.add(device)
                 updated = True
             continue
