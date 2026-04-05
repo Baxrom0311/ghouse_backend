@@ -1,18 +1,24 @@
 # app.main.py
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.api.routes import ai_chat, auth, greenhouse, plant
-from app.core.db import create_db_and_tables
+from app.core.config import configure_logging, settings
+from app.core.db import create_db_and_tables, engine
 
 try:
     from fastmcp import FastMCP
 except ImportError:
     FastMCP = None  # type: ignore[assignment]
 
+configure_logging()
+
+logger = logging.getLogger(__name__)
 mcp: Any | None = None
 mcp_http_app = None
 
@@ -20,9 +26,9 @@ mcp_http_app = None
 @asynccontextmanager
 async def default_lifespan(app: FastAPI):
     create_db_and_tables()
-    print("Database tables created/verified")
+    logger.info("Database tables created/verified")
     yield
-    print("Application shutting down")
+    logger.info("Application shutting down")
 
 
 
@@ -41,7 +47,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -75,3 +81,16 @@ def root():
 def health_check():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@app.get("/health/ready", tags=["[default]"])
+def readiness_check():
+    """Readiness check endpoint."""
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.exception("Readiness check failed")
+        raise HTTPException(status_code=503, detail="Database is not ready") from exc
+
+    return {"status": "ready"}

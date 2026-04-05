@@ -1,11 +1,33 @@
+import json
+import logging
 import os
+from typing import Annotated
 from functools import lru_cache
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+DEV_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:4173",
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:4173",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8080",
+]
+PLACEHOLDER_SECRETS = {
+    "",
+    "change-me-before-production",
+    "dev-secret-key-change-me-in-production",
+}
 
 
 class Settings(BaseSettings):
+    APP_ENV: str = "development"
+    LOG_LEVEL: str = "INFO"
+
     # Database
     DATABASE_URL: str = "sqlite:///sqlite.db"
     DATABASE_ENGINE_ECHO: bool = False
@@ -15,23 +37,33 @@ class Settings(BaseSettings):
     # --- Conditional Logic (Post Initialization) ---
 
     def model_post_init(self, __context) -> None:
-        print(f"Current DATABASE_URL: {self.DATABASE_URL[:10]}...")
-
-        if self.DATABASE_URL.startswith("sqlite"):
-            print("Detected SQLite URL, setting check_same_thread=False.")
+        if self.DATABASE_URL.startswith("sqlite") and not self.DATABASE_ENGINE_CONNECT_ARGS:
             self.DATABASE_ENGINE_CONNECT_ARGS = {"check_same_thread": False}
-        elif "pymysql" in self.DATABASE_URL:
-            print("Detected MySQL URL, setting parameters...")
+        elif "pymysql" in self.DATABASE_URL and not self.DATABASE_ENGINE_KWARGS:
             self.DATABASE_ENGINE_KWARGS = dict(
                 pool_recycle=7200, pool_size=10, max_overflow=5
             )
-            print("Setting...", self.DATABASE_ENGINE_KWARGS)
-        else:
-            print("Detected non-SQLite URL, using default connection args.")
-            # If you set DATABASE_ENGINE_CONNECT_ARGS via an env var,
-            # the default will be the env var value (which is likely correct)
-            # If not, it remains the Field default_factory dict.
-            pass
+
+        if not self.CORS_ORIGINS and not self.is_production:
+            self.CORS_ORIGINS = list(DEV_CORS_ORIGINS)
+
+        if bool(self.MQTT_USERNAME) != bool(self.MQTT_PASSWORD):
+            raise ValueError(
+                "MQTT_USERNAME and MQTT_PASSWORD must both be set or both be empty."
+            )
+
+        if self.is_production:
+            secret_key = self.SECRET_KEY.strip()
+            if secret_key in PLACEHOLDER_SECRETS or len(secret_key) < 32:
+                raise ValueError(
+                    "SECRET_KEY must be set to a strong value with at least 32 characters in production."
+                )
+
+            if not self.CORS_ORIGINS:
+                raise ValueError("CORS_ORIGINS must be set in production.")
+
+            if "*" in self.CORS_ORIGINS:
+                raise ValueError("CORS_ORIGINS cannot contain '*' in production.")
 
     # temp
     GENERATE_SAMPLE_DATA: bool = False
@@ -42,6 +74,8 @@ class Settings(BaseSettings):
     # MQTT
     MQTT_BROKER_HOST: str = "localhost"
     MQTT_BROKER_PORT: int = 1883
+    MQTT_USERNAME: str = ""
+    MQTT_PASSWORD: str = ""
     DEFAULT_MQTT_TOPIC_ID: str = "1"
 
     # OpenAI
@@ -59,6 +93,7 @@ class Settings(BaseSettings):
 
     # Security
     SECRET_KEY: str = "dev-secret-key-change-me-in-production"
+    CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # DO NOT TOUCH BELOW!
     ALGORITHM: str = "HS256"
@@ -66,9 +101,46 @@ class Settings(BaseSettings):
     # REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     model_config = SettingsConfigDict(
-        env_file=(".env", ".env.example"),
+        env_file=(".env.example", ".env"),
         env_file_encoding="utf-8",
+        extra="ignore",
     )
+
+    @property
+    def is_production(self) -> bool:
+        return self.APP_ENV == "production"
+
+    @field_validator("APP_ENV", mode="before")
+    @classmethod
+    def normalize_app_env(cls, value: str | None) -> str:
+        return str(value or "development").strip().lower()
+
+    @field_validator("LOG_LEVEL", mode="before")
+    @classmethod
+    def normalize_log_level(cls, value: str | None) -> str:
+        return str(value or "INFO").strip().upper()
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value):
+        if value in (None, "", []):
+            return []
+
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                return []
+            if normalized.startswith("["):
+                parsed = json.loads(normalized)
+                if not isinstance(parsed, list):
+                    raise ValueError("CORS_ORIGINS JSON value must be a list.")
+                return [str(item).strip() for item in parsed if str(item).strip()]
+            return [item.strip() for item in normalized.split(",") if item.strip()]
+
+        if isinstance(value, (list, tuple, set)):
+            return [str(item).strip() for item in value if str(item).strip()]
+
+        raise ValueError("Unsupported CORS_ORIGINS format.")
 
 
 @lru_cache
@@ -79,6 +151,7 @@ def get_settings() -> Settings:
     """
     if os.getenv("APP_ENV") == "test":
         return Settings(
+            APP_ENV="test",
             DATABASE_URL="sqlite:///test0_sqlite.db",
             DATABASE_ENGINE_ECHO=False,
             DATABASE_ENGINE_CONNECT_ARGS={"check_same_thread": False},
@@ -88,3 +161,10 @@ def get_settings() -> Settings:
 
 
 settings: Settings = get_settings()
+
+
+def configure_logging() -> None:
+    logging.basicConfig(
+        level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+    )

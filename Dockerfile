@@ -1,6 +1,8 @@
 FROM python:3.11-slim
 
 WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
 # RUN apt-get update && apt-get install -y \
 #     gcc \
@@ -17,6 +19,7 @@ RUN pip install --no-cache-dir -r requirements2.txt
 
 COPY app/ ./app/
 COPY alembic/ ./alembic/
+COPY alembic.ini ./alembic.ini
 COPY worker/ ./worker/
 
 EXPOSE 8000

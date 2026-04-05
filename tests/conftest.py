@@ -16,7 +16,7 @@ TEST_EMAIL = "testuser@example.com"
 TEST_PASSWORD = "TestPassword123"
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def client():
     db_drop_all()
     create_db_and_tables()
@@ -29,7 +29,6 @@ def client():
 
 @pytest.fixture(scope="function")
 def db_session() -> Generator[Session, None, None]:
-    create_db_and_tables()
     for session in get_session():
         yield session
 

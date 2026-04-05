@@ -1,19 +1,22 @@
-version: "3.8"
-
 services:
   db:
     image: postgres:16-alpine
     container_name: agroai_db
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: greenhouse_db
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-greenhouse_db}
     ports:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d greenhouse_db"]
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:?set POSTGRES_USER} -d ${POSTGRES_DB:-greenhouse_db}",
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -21,37 +24,56 @@ services:
       - greenhouse_network
 
   mqtt:
-    image: eclipse-mosquitto:2
+    build:
+      context: ./mosquitto
     container_name: agroai_mqtt
+    restart: unless-stopped
+    environment:
+      MQTT_USERNAME: ${MQTT_USERNAME:?set MQTT_USERNAME}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD}
     ports:
       - "1883:1883"
     volumes:
-      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./mosquitto/data:/mosquitto/data
-      - ./mosquitto/log:/mosquitto/log
+      - mqtt_data:/mosquitto/data
+      - mqtt_log:/mosquitto/log
     networks:
       - greenhouse_network
 
   web:
     build: .
     container_name: agroai_web
+    restart: unless-stopped
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       APP_ENV: production
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/greenhouse_db
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
       MQTT_BROKER_HOST: mqtt
       MQTT_BROKER_PORT: 1883
-      SECRET_KEY: dev-secret-key-for-local-mvp-only
+      MQTT_USERNAME: ${MQTT_USERNAME:?set MQTT_USERNAME}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS}
     depends_on:
       db:
         condition: service_healthy
       mqtt:
         condition: service_started
-    volumes:
-      - ./app:/app/app
-      - ./worker:/app/worker
-      - ./alembic:/app/alembic
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks:
       - greenhouse_network
 
@@ -60,27 +82,31 @@ services:
       context: .
       dockerfile: Dockerfile.worker
     container_name: agroai_worker
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
       APP_ENV: production
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/greenhouse_db
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
       MQTT_BROKER_HOST: mqtt
       MQTT_BROKER_PORT: 1883
-      SECRET_KEY: dev-secret-key-for-local-mvp-only
+      MQTT_USERNAME: ${MQTT_USERNAME:?set MQTT_USERNAME}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS}
     depends_on:
       db:
         condition: service_healthy
       mqtt:
         condition: service_started
-    volumes:
-      - ./app:/app/app
-      - ./worker:/app/worker
-      - ./alembic:/app/alembic
     networks:
       - greenhouse_network
-    restart: unless-stopped
 
 volumes:
   db_data:
+  mqtt_data:
+  mqtt_log:
 
 networks:
   greenhouse_network:

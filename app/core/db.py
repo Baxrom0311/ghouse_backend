@@ -54,6 +54,25 @@ def run_db_migrations():
     command.upgrade(alembic_config, "head")
 
 
+def ensure_column(table_name: str, column_name: str, ddl: str) -> None:
+    inspector = inspect(engine)
+    existing_columns = {
+        column["name"] for column in inspector.get_columns(table_name)
+    }
+    if column_name in existing_columns:
+        return
+
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(ddl))
+    except Exception:
+        refreshed_columns = {
+            column["name"] for column in inspect(engine).get_columns(table_name)
+        }
+        if column_name not in refreshed_columns:
+            raise
+
+
 def ensure_schema_compatibility():
     inspector = inspect(engine)
     table_names = set(inspector.get_table_names())
@@ -65,28 +84,45 @@ def ensure_schema_compatibility():
     }
 
     if "mqtt_topic_id" not in greenhouse_columns:
-        with engine.begin() as connection:
-            connection.execute(
-                text("ALTER TABLE greenhouse ADD COLUMN mqtt_topic_id VARCHAR")
-            )
+        ensure_column(
+            "greenhouse",
+            "mqtt_topic_id",
+            "ALTER TABLE greenhouse ADD COLUMN mqtt_topic_id VARCHAR",
+        )
+    if "pending_mqtt_topic_id" not in greenhouse_columns:
+        ensure_column(
+            "greenhouse",
+            "pending_mqtt_topic_id",
+            "ALTER TABLE greenhouse ADD COLUMN pending_mqtt_topic_id VARCHAR",
+        )
+    if "mqtt_topic_update_token" not in greenhouse_columns:
+        ensure_column(
+            "greenhouse",
+            "mqtt_topic_update_token",
+            "ALTER TABLE greenhouse ADD COLUMN mqtt_topic_update_token VARCHAR",
+        )
 
     if "device" in table_names:
         device_columns = {column["name"] for column in inspector.get_columns("device")}
-        with engine.begin() as connection:
-            if "min_value" not in device_columns:
-                connection.execute(
-                    text("ALTER TABLE device ADD COLUMN min_value FLOAT")
-                )
-            if "max_value" not in device_columns:
-                connection.execute(
-                    text("ALTER TABLE device ADD COLUMN max_value FLOAT")
-                )
+        if "min_value" not in device_columns:
+            ensure_column(
+                "device",
+                "min_value",
+                "ALTER TABLE device ADD COLUMN min_value FLOAT",
+            )
+        if "max_value" not in device_columns:
+            ensure_column(
+                "device",
+                "max_value",
+                "ALTER TABLE device ADD COLUMN max_value FLOAT",
+            )
 
     from app.models.greenhouse import Greenhouse
 
     with Session(engine) as session:
         greenhouses = session.exec(select(Greenhouse).order_by(Greenhouse.id)).all()
         used_topic_ids: set[str] = set()
+        used_pending_topic_ids: set[str] = set()
         single_greenhouse = len(greenhouses) == 1
 
         for greenhouse in greenhouses:
@@ -113,6 +149,24 @@ def ensure_schema_compatibility():
             used_topic_ids.add(topic_id)
             session.add(greenhouse)
 
+        for greenhouse in greenhouses:
+            pending_topic_id = (greenhouse.pending_mqtt_topic_id or "").strip()
+            pending_token = (greenhouse.mqtt_topic_update_token or "").strip()
+
+            if (
+                not pending_topic_id
+                or not pending_token
+                or pending_topic_id == greenhouse.mqtt_topic_id
+                or pending_topic_id in used_topic_ids
+                or pending_topic_id in used_pending_topic_ids
+            ):
+                greenhouse.pending_mqtt_topic_id = None
+                greenhouse.mqtt_topic_update_token = None
+            else:
+                greenhouse.pending_mqtt_topic_id = pending_topic_id
+                used_pending_topic_ids.add(pending_topic_id)
+
+            session.add(greenhouse)
         session.commit()
 
     with engine.begin() as connection:
@@ -120,6 +174,12 @@ def ensure_schema_compatibility():
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS "
                 "ix_greenhouse_mqtt_topic_id ON greenhouse (mqtt_topic_id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ix_greenhouse_pending_mqtt_topic_id ON greenhouse (pending_mqtt_topic_id)"
             )
         )
 

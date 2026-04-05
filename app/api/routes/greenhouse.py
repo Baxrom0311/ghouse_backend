@@ -1,8 +1,10 @@
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import and_, delete, func
 from sqlmodel import Session, select
 
@@ -26,6 +28,47 @@ from app.services.mqtt_service import mqtt_service
 router = APIRouter(prefix="/greenhouses", tags=["greenhouses"])
 INVALID_MQTT_TOPIC_ID_CHARS = {"/", "+", "#"}
 TOPIC_ID_UPDATE_SUFFIX = "/system/topic_id"
+MAX_AUTO_TOPIC_RETRIES = 3
+
+
+def collect_reserved_topic_ids(greenhouses: list[Greenhouse]) -> set[str]:
+    reserved_topic_ids: set[str] = set()
+    for greenhouse in greenhouses:
+        for topic_id in (greenhouse.mqtt_topic_id, greenhouse.pending_mqtt_topic_id):
+            normalized_topic_id = (topic_id or "").strip()
+            if normalized_topic_id:
+                reserved_topic_ids.add(normalized_topic_id)
+    return reserved_topic_ids
+
+
+def is_topic_integrity_error(exc: IntegrityError) -> bool:
+    details = str(exc).lower()
+    return any(
+        marker in details
+        for marker in (
+            "mqtt_topic_id",
+            "pending_mqtt_topic_id",
+            "ix_greenhouse_mqtt_topic_id",
+            "ix_greenhouse_pending_mqtt_topic_id",
+            "uq_greenhouse_mqtt_topic_id",
+            "uq_greenhouse_pending_mqtt_topic_id",
+        )
+    )
+
+
+def commit_greenhouse_or_raise(db: Session, greenhouse: Greenhouse) -> None:
+    db.add(greenhouse)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if is_topic_integrity_error(exc):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="mqtt_topic_id already in use",
+            ) from exc
+        raise
+    db.refresh(greenhouse)
 
 
 def resolve_mqtt_topic_id(
@@ -34,16 +77,12 @@ def resolve_mqtt_topic_id(
     topic_id = (requested_topic_id or "").strip()
     if not topic_id:
         greenhouses = db.exec(select(Greenhouse).order_by(Greenhouse.id)).all()
-        used_topic_ids = {
-            existing.mqtt_topic_id.strip()
-            for existing in greenhouses
-            if existing.mqtt_topic_id and existing.mqtt_topic_id.strip()
-        }
+        used_topic_ids = collect_reserved_topic_ids(greenhouses)
         next_greenhouse_id = max((existing.id or 0 for existing in greenhouses), default=0) + 1
         return build_unique_topic_id(
             used_topic_ids,
             next_greenhouse_id,
-            prefer_default=not used_topic_ids,
+            prefer_default=settings.DEFAULT_MQTT_TOPIC_ID not in used_topic_ids,
         )
 
     if any(char in topic_id for char in INVALID_MQTT_TOPIC_ID_CHARS):
@@ -52,7 +91,10 @@ def resolve_mqtt_topic_id(
             detail="mqtt_topic_id must be a single MQTT topic segment",
         )
 
-    statement = select(Greenhouse).where(Greenhouse.mqtt_topic_id == topic_id)
+    statement = select(Greenhouse).where(
+        (Greenhouse.mqtt_topic_id == topic_id)
+        | (Greenhouse.pending_mqtt_topic_id == topic_id)
+    )
     existing = db.exec(statement).first()
     if existing and existing.id != greenhouse_id:
         raise HTTPException(
@@ -156,18 +198,41 @@ def create_greenhouse(
     db: Session = Depends(get_db),
 ):
     """Create a new greenhouse."""
-    mqtt_topic_id = resolve_mqtt_topic_id(db, greenhouse_data.mqtt_topic_id)
-    db_greenhouse = Greenhouse(
-        name=greenhouse_data.name,
-        ai_mode=greenhouse_data.ai_mode,
-        mqtt_topic_id=mqtt_topic_id,
-        owner_id=current_user.id,
+    for attempt in range(MAX_AUTO_TOPIC_RETRIES):
+        mqtt_topic_id = resolve_mqtt_topic_id(db, greenhouse_data.mqtt_topic_id)
+        db_greenhouse = Greenhouse(
+            name=greenhouse_data.name,
+            ai_mode=greenhouse_data.ai_mode,
+            mqtt_topic_id=mqtt_topic_id,
+            owner_id=current_user.id,
+        )
+        db.add(db_greenhouse)
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            if greenhouse_data.mqtt_topic_id:
+                if is_topic_integrity_error(exc):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="mqtt_topic_id already in use",
+                    ) from exc
+                raise
+            if attempt == MAX_AUTO_TOPIC_RETRIES - 1:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Failed to allocate unique mqtt_topic_id. Retry the request.",
+                ) from exc
+            continue
+
+        db.refresh(db_greenhouse)
+        ensure_greenhouse_devices(db, db_greenhouse)
+        return serialize_greenhouse(db_greenhouse)
+
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Failed to allocate unique mqtt_topic_id. Retry the request.",
     )
-    db.add(db_greenhouse)
-    db.commit()
-    db.refresh(db_greenhouse)
-    ensure_greenhouse_devices(db, db_greenhouse)
-    return serialize_greenhouse(db_greenhouse)
 
 
 @router.get("", response_model=list[GreenhouseRead])
@@ -219,29 +284,49 @@ def edit_greenhouse(
     db: Session = Depends(get_db),
 ):
     update_data = greenhouse_update.model_dump(exclude_unset=True)
+    topic_update_payload: dict[str, str] | None = None
+    current_topic_id = (greenhouse.mqtt_topic_id or settings.DEFAULT_MQTT_TOPIC_ID).strip()
+    regular_updates = {
+        key: value for key, value in update_data.items() if key != "mqtt_topic_id"
+    }
+
     if "mqtt_topic_id" in update_data:
         new_topic_id = resolve_mqtt_topic_id(
             db, update_data["mqtt_topic_id"], greenhouse.id
         )
-        current_topic_id = (greenhouse.mqtt_topic_id or settings.DEFAULT_MQTT_TOPIC_ID).strip()
         if new_topic_id != current_topic_id:
-            ok = mqtt_service.publish_device_command(
-                f"{current_topic_id}{TOPIC_ID_UPDATE_SUFFIX}",
-                new_topic_id,
+            greenhouse.pending_mqtt_topic_id = new_topic_id
+            greenhouse.mqtt_topic_update_token = secrets.token_urlsafe(16)
+            topic_update_payload = {
+                "topic_id": new_topic_id,
+                "token": greenhouse.mqtt_topic_update_token,
+            }
+            commit_greenhouse_or_raise(db, greenhouse)
+        else:
+            greenhouse.pending_mqtt_topic_id = None
+            greenhouse.mqtt_topic_update_token = None
+            regular_updates["mqtt_topic_id"] = new_topic_id
+
+    if topic_update_payload is not None:
+        ok = mqtt_service.publish_device_command(
+            f"{current_topic_id}{TOPIC_ID_UPDATE_SUFFIX}",
+            topic_update_payload,
+            retain=True,
+        )
+        if not ok:
+            greenhouse.pending_mqtt_topic_id = None
+            greenhouse.mqtt_topic_update_token = None
+            commit_greenhouse_or_raise(db, greenhouse)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="MQTT broker unavailable",
             )
-            if not ok:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="MQTT broker unavailable",
-                )
-        update_data["mqtt_topic_id"] = new_topic_id
 
-    for key, value in update_data.items():
-        setattr(greenhouse, key, value)
+    if regular_updates:
+        for key, value in regular_updates.items():
+            setattr(greenhouse, key, value)
+        commit_greenhouse_or_raise(db, greenhouse)
 
-    db.add(greenhouse)
-    db.commit()
-    db.refresh(greenhouse)
     ensure_greenhouse_devices(db, greenhouse)
 
     latest_by_greenhouse = latest_telemetry_by_greenhouse(db, [greenhouse.id])

@@ -34,13 +34,18 @@ class GreenhouseStats(BaseModel):
 
 
 class Greenhouse(GreenhouseBase, table=True):
-    __table_args__ = (UniqueConstraint("mqtt_topic_id"),)
+    __table_args__ = (
+        UniqueConstraint("mqtt_topic_id"),
+        UniqueConstraint("pending_mqtt_topic_id"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
     )
     owner_id: int = Field(foreign_key="user.id")
+    pending_mqtt_topic_id: str | None = None
+    mqtt_topic_update_token: str | None = None
 
     telemetries: list["Telemetry"] = Relationship(back_populates="greenhouse")
     plants: list["Plant"] = Relationship(back_populates="greenhouse")

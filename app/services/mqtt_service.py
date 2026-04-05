@@ -1,9 +1,12 @@
 import json
+import logging
 from typing import Optional
 
 import paho.mqtt.client as mqtt
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class MQTTService:
@@ -16,6 +19,11 @@ class MQTTService:
     def _connect(self):
         """Initialize MQTT client connection."""
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        if settings.MQTT_USERNAME:
+            self.client.username_pw_set(
+                settings.MQTT_USERNAME,
+                settings.MQTT_PASSWORD or None,
+            )
         try:
             self.client.connect(
                 settings.MQTT_BROKER_HOST, settings.MQTT_BROKER_PORT, 60
@@ -23,7 +31,7 @@ class MQTTService:
             self.client.loop_start()
         except Exception as e:
             self.client = None
-            print(f"MQTT connection error: {e}")
+            logger.warning("MQTT connection error: %s", e)
 
     def _ensure_connected(self) -> bool:
         if self.client is None:
@@ -36,7 +44,7 @@ class MQTTService:
 
         return self.client is not None and self.client.is_connected()
 
-    def publish_device_command(self, topic: str, payload):
+    def publish_device_command(self, topic: str, payload, retain: bool = False):
         """
         Publish a command to control a device.
 
@@ -60,15 +68,15 @@ class MQTTService:
             payload = json.dumps(payload)
 
         try:
-            result = self.client.publish(command_topic, payload, qos=1, retain=False)
+            result = self.client.publish(command_topic, payload, qos=1, retain=retain)
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                print(f"Published command to {command_topic}: {payload}")
+                logger.info("Published MQTT message to %s", command_topic)
                 return True
             else:
-                print(f"Failed to publish command: {result.rc}")
+                logger.warning("Failed to publish MQTT command: %s", result.rc)
                 return False
         except Exception as e:
-            print(f"Error publishing MQTT command: {e}")
+            logger.exception("Error publishing MQTT command: %s", e)
             return False
 
     def disconnect(self):

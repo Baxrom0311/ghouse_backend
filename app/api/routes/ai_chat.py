@@ -115,7 +115,9 @@ def build_messages(body: ChatRequest) -> list[dict[str, Any]]:
     ]
 
     for item in body.history:
-        if item.role not in {"system", "user", "assistant", "tool"}:
+        # Only trust conversational turns from the client. System and tool
+        # messages must be created by the server during the current request.
+        if item.role not in {"user", "assistant"}:
             continue
         messages.append({"role": item.role, "content": item.content})
 
