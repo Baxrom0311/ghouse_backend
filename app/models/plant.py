@@ -1,7 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 
 from sqlmodel import Field, Relationship, SQLModel
+
+from app.core.time import utc_now_naive
 
 
 class PlantType(str, Enum):
@@ -48,10 +50,8 @@ class PlantBase(SQLModel):
 
 class Plant(PlantBase, table=True):
     id: int | None = Field(default=None, primary_key=True)
-    greenhouse_id: int = Field(foreign_key="greenhouse.id")
-    created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
-    )
+    greenhouse_id: int = Field(foreign_key="greenhouse.id", index=True)
+    created_at: datetime = Field(default_factory=utc_now_naive)
 
     # Relationships
     greenhouse: "Greenhouse" = Relationship(back_populates="plants")

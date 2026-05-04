@@ -195,6 +195,7 @@ def create_db_and_tables():
 def db_drop_all():
     SQLModel.metadata.drop_all(engine)
     with engine.begin() as connection:
+        connection.execute(text("DROP TABLE IF EXISTS _alembic_tmp_greenhouse"))
         connection.execute(text("DROP TABLE IF EXISTS alembic_version"))
 
 

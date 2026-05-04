@@ -19,12 +19,34 @@ def create_access_token(subject: str | Any, expires_delta: timedelta) -> str:
     return encoded_jwt
 
 
+def create_refresh_token(subject: str | Any, expires_delta: timedelta) -> str:
+    expire = datetime.now(timezone.utc) + expires_delta
+    to_encode = {"exp": expire, "sub": str(subject), "type": "refresh"}
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+
 def decode_access_token(token: str) -> dict | None:
     """Decode and verify a JWT token."""
     try:
         payload = jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+            token, settings.SECRET_KEY, algorithms=[ALGORITHM]
         )
+        if payload.get("type") != "access":
+            return None
+        return payload
+    except jwt.exceptions.InvalidTokenError:
+        return None
+
+
+def decode_refresh_token(token: str) -> dict | None:
+    """Decode and verify a refresh JWT token."""
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[ALGORITHM]
+        )
+        if payload.get("type") != "refresh":
+            return None
         return payload
     except jwt.exceptions.InvalidTokenError:
         return None

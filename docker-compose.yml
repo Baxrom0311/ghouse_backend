@@ -7,8 +7,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-greenhouse_db}
-    ports:
-      - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
@@ -43,12 +41,13 @@ services:
     build: .
     container_name: agroai_web
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     env_file:
       - .env
     environment:
       APP_ENV: production
+      RUN_MIGRATIONS_ON_STARTUP: "false"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
       MQTT_BROKER_HOST: mqtt
@@ -57,9 +56,13 @@ services:
       MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD}
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
       CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?set ALLOWED_HOSTS}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY}
+    volumes:
+      - backend_logs:/app/logs
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       mqtt:
         condition: service_started
     healthcheck:
@@ -77,6 +80,31 @@ services:
     networks:
       - greenhouse_network
 
+  frontend:
+    build:
+      context: ../web_main_frontend
+    container_name: agroai_frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-qO-",
+          "http://127.0.0.1/healthz",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - greenhouse_network
+
   worker:
     build:
       context: .
@@ -87,6 +115,7 @@ services:
       - .env
     environment:
       APP_ENV: production
+      RUN_MIGRATIONS_ON_STARTUP: "false"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
       MQTT_BROKER_HOST: mqtt
@@ -95,11 +124,58 @@ services:
       MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD}
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
       CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?set ALLOWED_HOSTS}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY}
+    volumes:
+      - backend_logs:/app/logs
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mqtt:
+        condition: service_started
+    networks:
+      - greenhouse_network
+
+  retention:
+    build:
+      context: .
+    container_name: agroai_retention
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      RETENTION_CHECK_INTERVAL_SECONDS: ${RETENTION_CHECK_INTERVAL_SECONDS:-3600}
+    command: ["python", "-m", "worker.retention"]
     depends_on:
       db:
         condition: service_healthy
-      mqtt:
-        condition: service_started
+    networks:
+      - greenhouse_network
+
+  migrate:
+    build: .
+    container_name: agroai_migrate
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      RUN_MIGRATIONS_ON_STARTUP: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      MQTT_USERNAME: ${MQTT_USERNAME:?set MQTT_USERNAME}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?set MQTT_PASSWORD}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:?set ALLOWED_HOSTS}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY}
+    command: ["python", "-m", "app.core.migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
     networks:
       - greenhouse_network
 
@@ -107,6 +183,7 @@ volumes:
   db_data:
   mqtt_data:
   mqtt_log:
+  backend_logs:
 
 networks:
   greenhouse_network:

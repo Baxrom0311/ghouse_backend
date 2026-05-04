@@ -1,5 +1,17 @@
-from pydantic import EmailStr
+from pydantic import EmailStr, field_validator
 from sqlmodel import Field, SQLModel
+
+
+def validate_password_strength(password: str) -> str:
+    if len(password) < 8:
+        raise ValueError("Password must be at least 8 characters long")
+    if len(password) > 128:
+        raise ValueError("Password must be at most 128 characters long")
+    if not any(char.isalpha() for char in password):
+        raise ValueError("Password must contain at least one letter")
+    if not any(char.isdigit() for char in password):
+        raise ValueError("Password must contain at least one number")
+    return password
 
 
 class UserBase(SQLModel):
@@ -19,6 +31,11 @@ class UserCreate(SQLModel):
     password: str
     first_name: str
     last_name: str | None = None
+
+    @field_validator("password")
+    @classmethod
+    def password_is_strong(cls, password: str) -> str:
+        return validate_password_strength(password)
 
 
 class UserRead(UserBase):

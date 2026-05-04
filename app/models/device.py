@@ -10,7 +10,7 @@ class DeviceType(str, Enum):
 
 
 class DeviceBase(SQLModel):
-    greenhouse_id: int = Field(foreign_key="greenhouse.id")
+    greenhouse_id: int = Field(foreign_key="greenhouse.id", index=True)
     type: DeviceType
     name: str
     topic_root: str  # MQTT topic root for this device

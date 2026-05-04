@@ -8,8 +8,10 @@ from app.core.db import get_session
 from app.core.security import decode_access_token
 from app.models.greenhouse import Greenhouse
 from app.models.plant import Plant
+from app.models.tenant import TenantRole
 from app.models.user import User
 from app.core.context import ctx_user
+from app.services.tenant_service import get_tenant_member_role, user_can_access_greenhouse
 
 
 security = HTTPBearer(auto_error=False)
@@ -61,6 +63,12 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Inactive user",
+        )
+
     return user
 
 
@@ -70,9 +78,8 @@ def get_authorized_greenhouse(
     current_user: User = Depends(get_current_user),
 ) -> Greenhouse:
     greenhouse = db.get(Greenhouse, greenhouse_id)
-    if greenhouse:
-        if greenhouse.owner_id == current_user.id:
-            return greenhouse
+    if greenhouse and user_can_access_greenhouse(db, current_user.id, greenhouse):
+        return greenhouse
 
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND, detail="Greenhouse not found"
@@ -86,22 +93,45 @@ def get_authorized_plant(
 ) -> Plant:
     """
     Fetch a plant by ID, ensuring it belongs to a greenhouse
-    owned by the current user.
+    accessible by the current user's tenant.
     """
-    statement = (
-        select(Plant)
-        .join(Greenhouse)
-        .where(Plant.id == plant_id)
-        .where(Greenhouse.owner_id == current_user.id)
-    )
-    plant = db.exec(statement).first()
-
+    plant = db.get(Plant, plant_id)
     if not plant:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Plant not found"
+        )
+        
+    greenhouse = db.get(Greenhouse, plant.greenhouse_id)
+    if not greenhouse or not user_can_access_greenhouse(db, current_user.id, greenhouse):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Plant not found"
         )
 
     return plant
+
+
+def assert_can_modify_greenhouse(
+    db: Session,
+    current_user: User,
+    greenhouse: Greenhouse,
+) -> None:
+    if greenhouse.owner_id == current_user.id:
+        return
+
+    if greenhouse.tenant_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient greenhouse permissions",
+        )
+
+    role = get_tenant_member_role(db, greenhouse.tenant_id, current_user.id)
+    if role in {TenantRole.OWNER, TenantRole.ADMIN, TenantRole.OPERATOR}:
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Insufficient greenhouse permissions",
+    )
 
 
 # def get_authorized_greenhouse_device(

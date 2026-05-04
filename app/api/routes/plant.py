@@ -1,24 +1,21 @@
 from functools import lru_cache
 
-from fastapi import APIRouter, Depends, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select
 
 from app.api.deps import (
+    assert_can_modify_greenhouse,
     get_authorized_greenhouse,
     get_authorized_plant,
     get_current_user,
     get_db,
 )
 from app.models.greenhouse import Greenhouse
+from app.models.common import ResponseOK
 from app.models.plant import Plant, PlantCreate, PlantRead, PlantType, PlantUpdate
 from app.models.user import User
 
 router = APIRouter(prefix="/greenhouses/{greenhouse_id}/plants", tags=["plants"])
-
-
-class ResponseOK(BaseModel):
-    ok: bool = True
 
 
 @lru_cache()
@@ -36,9 +33,11 @@ def get_plant_types(current_user: User = Depends(get_current_user)):
 def create_plant(
     plant_data: PlantCreate,
     greenhouse: Greenhouse = Depends(get_authorized_greenhouse),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Create a new plant."""
+    assert_can_modify_greenhouse(db, current_user, greenhouse)
     db_plant = Plant(
         greenhouse_id=greenhouse.id,
         name=plant_data.name,
@@ -77,8 +76,16 @@ def get_plant(
 def edit_plant(
     plant_update: PlantUpdate,
     plant: Plant = Depends(get_authorized_plant),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    greenhouse = db.get(Greenhouse, plant.greenhouse_id)
+    if greenhouse is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Greenhouse not found",
+        )
+    assert_can_modify_greenhouse(db, current_user, greenhouse)
     update_data = plant_update.model_dump(exclude_unset=True)
 
     for key, value in update_data.items():
@@ -88,14 +95,22 @@ def edit_plant(
     db.commit()
     db.refresh(plant)
 
-    return plant
+    return PlantRead.model_validate(plant, context={"session": db})
 
 
 @router.delete("/{plant_id}", response_model=ResponseOK)
 def delete_plant(
     plant: Plant = Depends(get_authorized_plant),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    greenhouse = db.get(Greenhouse, plant.greenhouse_id)
+    if greenhouse is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Greenhouse not found",
+        )
+    assert_can_modify_greenhouse(db, current_user, greenhouse)
     db.delete(plant)
     db.commit()
     return {"ok": True}

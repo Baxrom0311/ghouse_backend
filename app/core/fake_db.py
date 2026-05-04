@@ -1,4 +1,5 @@
 from datetime import datetime
+import logging
 from time import sleep
 
 from faker import Faker
@@ -10,14 +11,20 @@ from app.core.security import get_password_hash
 from app.models import Greenhouse, User
 from app.models.telemetry import Telemetry
 
+logger = logging.getLogger(__name__)
+
 
 def fakeit():
     pass
 
 
 def generate_sample_data(engine: Engine):
-    print("\n\nGENERATING SAMPLE DATA...")
     """Generate sample data: 2-3 users, 1-2 greenhouses per user, and all device types."""
+    if settings.APP_ENV == "production":
+        logger.warning("fake_db cannot be run in production environment")
+        return
+
+    logger.info("Generating sample data")
     fake = Faker()
 
     with Session(engine) as db:
@@ -33,7 +40,7 @@ def generate_sample_data(engine: Engine):
                 email=f"test{i + 1}@example.com",
                 first_name=f"Test User " + str(i + 1),
                 last_name=fake.last_name(),
-                hashed_password=get_password_hash("test"),
+                hashed_password=get_password_hash("TestPassword123!"),
             )
             db.add(user)
             users.append(user)
@@ -67,7 +74,7 @@ def generate_sample_data(engine: Engine):
         for greenhouse in greenhouses:
             if len(greenhouse.telemetries) < 1:
                 telemetry = Telemetry(
-                    time=fake.date_time(),
+                    time=datetime.now().replace(tzinfo=None),
                     greenhouse_id=greenhouse.id,
                     # Sensors
                     air=fake.random_int(min=0, max=100),
@@ -88,4 +95,4 @@ def generate_sample_data(engine: Engine):
         db.add_all(telemetries)
         db.commit()
 
-    print("\n\nGENERATING SAMPLE DATA... done")
+    logger.info("Sample data generation completed")

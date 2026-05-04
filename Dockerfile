@@ -10,11 +10,9 @@ ENV PYTHONUNBUFFERED=1
 #     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-COPY requirements2.txt .
 
 RUN pip install -U pip
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir -r requirements2.txt
 
 
 COPY app/ ./app/
@@ -22,6 +20,9 @@ COPY alembic/ ./alembic/
 COPY alembic.ini ./alembic.ini
 COPY worker/ ./worker/
 
+RUN addgroup --system app && adduser --system --ingroup app app
+USER app
+
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["gunicorn", "app.main:app", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "120"]

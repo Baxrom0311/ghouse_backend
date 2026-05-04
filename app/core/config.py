@@ -20,7 +20,14 @@ DEV_CORS_ORIGINS = [
 PLACEHOLDER_SECRETS = {
     "",
     "change-me-before-production",
+    "change-me-before-production-minimum-32-characters",
     "dev-secret-key-change-me-in-production",
+}
+PLACEHOLDER_API_KEYS = {
+    "",
+    "DEEPSEEK_API_KEY",
+    "your-deepseek-api-key",
+    "your_deepseek_api_key_here",
 }
 
 
@@ -33,6 +40,7 @@ class Settings(BaseSettings):
     DATABASE_ENGINE_ECHO: bool = False
     DATABASE_ENGINE_CONNECT_ARGS: dict = Field(default_factory=dict)
     DATABASE_ENGINE_KWARGS: dict = Field(default_factory=dict)
+    RUN_MIGRATIONS_ON_STARTUP: bool = True
 
     # --- Conditional Logic (Post Initialization) ---
 
@@ -47,12 +55,21 @@ class Settings(BaseSettings):
         if not self.CORS_ORIGINS and not self.is_production:
             self.CORS_ORIGINS = list(DEV_CORS_ORIGINS)
 
+        if not self.ALLOWED_HOSTS and not self.is_production:
+            self.ALLOWED_HOSTS = ["*"]
+
         if bool(self.MQTT_USERNAME) != bool(self.MQTT_PASSWORD):
             raise ValueError(
                 "MQTT_USERNAME and MQTT_PASSWORD must both be set or both be empty."
             )
 
         if self.is_production:
+            if self.DATABASE_URL.startswith("sqlite"):
+                raise ValueError("DATABASE_URL must not use SQLite in production.")
+
+            if os.getenv("RUN_MIGRATIONS_ON_STARTUP") is None:
+                self.RUN_MIGRATIONS_ON_STARTUP = False
+
             secret_key = self.SECRET_KEY.strip()
             if secret_key in PLACEHOLDER_SECRETS or len(secret_key) < 32:
                 raise ValueError(
@@ -65,6 +82,15 @@ class Settings(BaseSettings):
             if "*" in self.CORS_ORIGINS:
                 raise ValueError("CORS_ORIGINS cannot contain '*' in production.")
 
+            if not self.ALLOWED_HOSTS:
+                raise ValueError("ALLOWED_HOSTS must be set in production.")
+
+            if "*" in self.ALLOWED_HOSTS:
+                raise ValueError("ALLOWED_HOSTS cannot contain '*' in production.")
+
+            if self.DEEPSEEK_API_KEY.strip() in PLACEHOLDER_API_KEYS:
+                raise ValueError("DEEPSEEK_API_KEY must be set in production.")
+
     # temp
     GENERATE_SAMPLE_DATA: bool = False
 
@@ -76,6 +102,8 @@ class Settings(BaseSettings):
     MQTT_BROKER_PORT: int = 1883
     MQTT_USERNAME: str = ""
     MQTT_PASSWORD: str = ""
+    MQTT_TLS_ENABLED: bool = False
+    MQTT_TLS_CA_CERTS: str = ""
     DEFAULT_MQTT_TOPIC_ID: str = "1"
 
     # OpenAI
@@ -90,15 +118,21 @@ class Settings(BaseSettings):
     # AI Settings
     AI_MODEL_NAME: str = "gemini-2.5-flash"
     AI_CHAT_MODEL: str = "deepseek-chat"
+    ENABLE_MCP: bool = False
+
+    # Observability
+    SENTRY_DSN: str = ""
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.0
 
     # Security
     SECRET_KEY: str = "dev-secret-key-change-me-in-production"
     CORS_ORIGINS: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    ALLOWED_HOSTS: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # DO NOT TOUCH BELOW!
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
-    # REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     model_config = SettingsConfigDict(
         env_file=(".env.example", ".env"),
@@ -123,6 +157,15 @@ class Settings(BaseSettings):
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, value):
+        return cls.parse_list_env(value, "CORS_ORIGINS")
+
+    @field_validator("ALLOWED_HOSTS", mode="before")
+    @classmethod
+    def parse_allowed_hosts(cls, value):
+        return cls.parse_list_env(value, "ALLOWED_HOSTS")
+
+    @classmethod
+    def parse_list_env(cls, value, name: str) -> list[str]:
         if value in (None, "", []):
             return []
 
@@ -133,14 +176,14 @@ class Settings(BaseSettings):
             if normalized.startswith("["):
                 parsed = json.loads(normalized)
                 if not isinstance(parsed, list):
-                    raise ValueError("CORS_ORIGINS JSON value must be a list.")
+                    raise ValueError(f"{name} JSON value must be a list.")
                 return [str(item).strip() for item in parsed if str(item).strip()]
             return [item.strip() for item in normalized.split(",") if item.strip()]
 
         if isinstance(value, (list, tuple, set)):
             return [str(item).strip() for item in value if str(item).strip()]
 
-        raise ValueError("Unsupported CORS_ORIGINS format.")
+        raise ValueError(f"Unsupported {name} format.")
 
 
 @lru_cache
@@ -155,7 +198,10 @@ def get_settings() -> Settings:
             DATABASE_URL="sqlite:///test0_sqlite.db",
             DATABASE_ENGINE_ECHO=False,
             DATABASE_ENGINE_CONNECT_ARGS={"check_same_thread": False},
+            CORS_ORIGINS=["*"],
+            ALLOWED_HOSTS=["*"],
             GENERATE_SAMPLE_DATA=False,
+            ENABLE_MCP=True,
         )
     return Settings()
 
@@ -164,7 +210,28 @@ settings: Settings = get_settings()
 
 
 def configure_logging() -> None:
+    import logging.handlers
+
+    log_level = getattr(logging, settings.LOG_LEVEL, logging.INFO)
+    log_format = "%(asctime)s %(levelname)s [%(name)s] - %(message)s"
+    
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    
+    if settings.APP_ENV == "production":
+        log_dir = "/app/logs"
+        os.makedirs(log_dir, exist_ok=True)
+        file_handler = logging.handlers.TimedRotatingFileHandler(
+            filename=f"{log_dir}/agroai.log",
+            when="midnight",
+            interval=1,
+            backupCount=30,
+            encoding="utf-8",
+        )
+        handlers.append(file_handler)
+
     logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+        level=log_level,
+        format=log_format,
+        handlers=handlers,
+        force=True,
     )

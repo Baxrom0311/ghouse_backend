@@ -1,19 +1,61 @@
 import json
+import logging
+import re
+import uuid
+from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
+from sqlmodel import Session, select
 
-from app.api.deps import get_current_user
+from app.api.deps import get_authorized_greenhouse, get_current_user, get_db
 from app.core.config import settings
 from app.core.context import ctx_user
+from app.models.chat import (
+    ChatMessage,
+    ChatMessageRead,
+    ChatRole,
+    ChatScope,
+    ChatSession,
+    ChatSessionRead,
+    utc_now_naive,
+)
+from app.models.greenhouse import Greenhouse
+from app.models.plant import Plant
+from app.models.telemetry import Telemetry
 from app.models.user import User
+from app.services.device_registry import ensure_greenhouse_devices
+from app.services.tenant_service import (
+    enforce_ai_message_limit,
+    ensure_personal_tenant,
+    get_greenhouse_tenant,
+    get_user_tenant_ids,
+    record_usage_event,
+    user_can_access_greenhouse,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 PLACEHOLDER_API_KEYS = {"", "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"}
-SAFE_TOOL_MARKERS = ("_api_greenhouses", "_api_plant")
-BLOCKED_TOOL_PREFIXES = ("delete_",)
+READ_ONLY_TOOL_NAMES = {
+    "list_greenhouses_api_greenhouses_get",
+    "get_greenhouse_api_greenhouses__greenhouse_id__get",
+    "list_greenhouse_telemetry_api_greenhouses__greenhouse_id__telemetry_get",
+    "get_device_command_api_greenhouses__greenhouse_id__commands__command_id__get",
+    "list_devices_api_greenhouses__greenhouse_id__devices_get",
+    "get_plant_types_api_greenhouses__greenhouse_id__plants_plant_types_get",
+    "list_plants_api_greenhouses__greenhouse_id__plants_get",
+    "get_plant_api_greenhouses__greenhouse_id__plants__plant_id__get",
+}
+CONFIRMABLE_MUTATION_TOOL_NAMES = {
+    "switch_mode_ai_control_api_greenhouses__greenhouse_id__ai_switch__state__post",
+    "device_switch_on_off_api_greenhouses__greenhouse_id__devices__device_name__switch__device_state__post",
+}
+CONFIRMATION_TERMS = ("tasdiqlayman", "i confirm")
 
 
 class ChatHistoryItem(BaseModel):
@@ -24,10 +66,12 @@ class ChatHistoryItem(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: list[ChatHistoryItem] = Field(default_factory=list)
+    session_id: int | None = None
 
 
 class ChatRequestResponse(BaseModel):
     reply: str
+    session_id: int | None = None
 
 
 def clean_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -69,10 +113,75 @@ def clean_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return schema
 
 
-def tool_is_allowed(tool_name: str) -> bool:
-    if tool_name.startswith(BLOCKED_TOOL_PREFIXES):
-        return False
-    return any(marker in tool_name for marker in SAFE_TOOL_MARKERS)
+@dataclass
+class ParsedToolCall:
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+    id: str = field(default_factory=lambda: f"dsml_{uuid.uuid4().hex[:8]}")
+
+
+_DSML_MARKER = "\uff5cDSML\uff5c"
+
+
+def parse_dsml_tool_calls(content: str) -> tuple[str, list[ParsedToolCall]]:
+    """Parse DSML-formatted tool calls that Deepseek sometimes emits as text.
+
+    Returns the text before the DSML block and a list of parsed tool calls.
+    """
+    if _DSML_MARKER not in content:
+        return content, []
+
+    # Extract text before the DSML block
+    dsml_start = content.find(f"<{_DSML_MARKER}")
+    prefix_text = content[:dsml_start].strip() if dsml_start > 0 else ""
+
+    tool_calls: list[ParsedToolCall] = []
+
+    invoke_pattern = re.compile(
+        r'<[^>]*DSML[^>]*invoke\s+name="([^"]+)"[^>]*>(.*?)</[^>]*invoke>',
+        re.DOTALL,
+    )
+    arg_pattern = re.compile(
+        r'<[^>]*DSML[^>]*arg\s+name="([^"]+)"[^>]*>(.*?)</[^>]*arg>',
+        re.DOTALL,
+    )
+
+    for invoke_match in invoke_pattern.finditer(content):
+        tool_name = invoke_match.group(1)
+        invoke_body = invoke_match.group(2)
+        args: dict[str, Any] = {}
+        for arg_match in arg_pattern.finditer(invoke_body):
+            arg_name = arg_match.group(1)
+            arg_value = arg_match.group(2).strip()
+            # Convert to appropriate types
+            if arg_value.lower() == "true":
+                args[arg_name] = True
+            elif arg_value.lower() == "false":
+                args[arg_name] = False
+            elif arg_value.isdigit():
+                args[arg_name] = int(arg_value)
+            else:
+                try:
+                    args[arg_name] = float(arg_value)
+                except ValueError:
+                    args[arg_name] = arg_value
+        tool_calls.append(ParsedToolCall(name=tool_name, arguments=args))
+
+    if tool_calls:
+        logger.info("Parsed %d DSML tool call(s) from response content", len(tool_calls))
+
+    return prefix_text, tool_calls
+
+
+def mutation_confirmation_present(message: str) -> bool:
+    normalized_message = message.casefold()
+    return any(term in normalized_message for term in CONFIRMATION_TERMS)
+
+
+def tool_is_allowed(tool_name: str, allow_mutations: bool = False) -> bool:
+    if tool_name in READ_ONLY_TOOL_NAMES:
+        return True
+    return allow_mutations and tool_name in CONFIRMABLE_MUTATION_TOOL_NAMES
 
 
 def get_ai_client():
@@ -102,19 +211,152 @@ def get_mcp_client_class():
     return Client
 
 
-def build_messages(body: ChatRequest) -> list[dict[str, Any]]:
+def latest_telemetry_for_greenhouse(db: Session, greenhouse_id: int) -> Telemetry | None:
+    return db.exec(
+        select(Telemetry)
+        .where(Telemetry.greenhouse_id == greenhouse_id)
+        .order_by(Telemetry.time.desc(), Telemetry.id.desc())
+    ).first()
+
+
+def telemetry_to_prompt_payload(telemetry: Telemetry | None) -> dict[str, Any] | None:
+    if telemetry is None:
+        return None
+    return {
+        "time": telemetry.time.isoformat() if telemetry.time else None,
+        "air": telemetry.air,
+        "light": telemetry.light,
+        "humidity": telemetry.humidity,
+        "temperature": telemetry.temperature,
+        "moisture": telemetry.moisture,
+        "soil_water_pump": telemetry.soil_water_pump,
+        "air_water_pump": telemetry.air_water_pump,
+        "led": telemetry.led,
+        "fan": telemetry.fan,
+        "ai_mode": telemetry.ai_mode,
+    }
+
+
+def greenhouse_prompt_payload(db: Session, greenhouse: Greenhouse) -> dict[str, Any]:
+    telemetry = latest_telemetry_for_greenhouse(db, greenhouse.id)
+    devices = ensure_greenhouse_devices(db, greenhouse)
+    plants = db.exec(
+        select(Plant).where(Plant.greenhouse_id == greenhouse.id).limit(20)
+    ).all()
+
+    return {
+        "id": greenhouse.id,
+        "name": greenhouse.name,
+        "mqtt_topic_id": greenhouse.mqtt_topic_id,
+        "ai_mode": greenhouse.ai_mode,
+        "latest_telemetry": telemetry_to_prompt_payload(telemetry),
+        "devices": [
+            {
+                "name": device.name,
+                "type": device.type.value,
+                "min_value": device.min_value,
+                "max_value": device.max_value,
+            }
+            for device in devices.values()
+        ],
+        "plants": [
+            {
+                "id": plant.id,
+                "name": plant.name,
+                "type": plant.type.value,
+                "variety": plant.variety,
+            }
+            for plant in plants
+        ],
+    }
+
+
+def accessible_greenhouses_for_user(db: Session, current_user: User) -> list[Greenhouse]:
+    tenant_ids = get_user_tenant_ids(db, current_user.id)
+    if tenant_ids:
+        statement = select(Greenhouse).where(
+            or_(
+                Greenhouse.owner_id == current_user.id,
+                Greenhouse.tenant_id.in_(tenant_ids),
+            )
+        )
+    else:
+        statement = select(Greenhouse).where(Greenhouse.owner_id == current_user.id)
+    return db.exec(statement.order_by(Greenhouse.id)).all()
+
+
+def build_global_system_prompt(db: Session, current_user: User) -> str:
+    greenhouses = accessible_greenhouses_for_user(db, current_user)
+    payload = [greenhouse_prompt_payload(db, greenhouse) for greenhouse in greenhouses[:10]]
+    context_json = json.dumps(payload, ensure_ascii=False, default=str)
+    return (
+        "You are AgroAI, a greenhouse operations assistant. "
+        "This is the global assistant view: answer across all greenhouses that "
+        "the current user can access. Do not assume greenhouse id 1; ask a short "
+        "clarifying question if a control action needs a specific greenhouse. "
+        "For device or AI mode changes, ask the user to explicitly confirm with "
+        "'tasdiqlayman' or 'i confirm' before using a control tool.\n\n"
+        f"Accessible greenhouse context JSON: {context_json}"
+    )
+
+
+def build_scoped_system_prompt(db: Session, greenhouse: Greenhouse) -> str:
+    payload = greenhouse_prompt_payload(db, greenhouse)
+    context_json = json.dumps(payload, ensure_ascii=False, default=str)
+    return (
+        "You are AgroAI, a greenhouse operations assistant. "
+        f"This chat is already inside greenhouse id {greenhouse.id} named "
+        f"'{greenhouse.name}'. Treat every status question and safe control request "
+        "as referring to this greenhouse unless the user explicitly says otherwise. "
+        f"Never ask for a greenhouse id in this scoped chat; use greenhouse_id={greenhouse.id} "
+        "when a tool requires it. For device or AI mode changes, ask the user to "
+        "explicitly confirm with 'tasdiqlayman' or 'i confirm' before using a control "
+        "tool.\n\n"
+        f"Scoped greenhouse context JSON: {context_json}"
+    )
+
+
+def history_from_session(db: Session, session: ChatSession, limit: int = 20) -> list[ChatHistoryItem]:
+    # Senior Level: Limit history to prevent huge context windows and slow queries
+    messages = db.exec(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session.id)
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .limit(limit)
+    ).all()
+    # Reverse to restore chronological order
+    messages.reverse()
+    return [
+        ChatHistoryItem(
+            role=message.role.value if isinstance(message.role, ChatRole) else message.role,
+            content=message.content,
+        )
+        for message in messages
+    ]
+
+
+def build_messages(
+    body: ChatRequest,
+    *,
+    system_prompt: str | None = None,
+    persisted_history: list[ChatHistoryItem] | None = None,
+) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
-            "content": (
+            "content": system_prompt
+            or (
                 "You are a helpful greenhouse assistant. "
-                "Use greenhouse id 1 if the user asks for a greenhouse action "
-                "without specifying an id."
+                "Do not assume greenhouse id 1 if the user asks for a greenhouse "
+                "action without specifying an id. "
+                "For device or AI mode changes, ask the user to explicitly confirm "
+                "with 'tasdiqlayman' or 'i confirm' before using a control tool."
             ),
         }
     ]
 
-    for item in body.history:
+    history = persisted_history if persisted_history is not None else body.history
+    for item in history:
         # Only trust conversational turns from the client. System and tool
         # messages must be created by the server during the current request.
         if item.role not in {"user", "assistant"}:
@@ -151,11 +393,22 @@ def dump_message(message: Any) -> dict[str, Any]:
     }
 
 
-def build_tool_definitions(mcp_tools: list[Any]) -> list[dict[str, Any]]:
+def build_tool_definitions(
+    mcp_tools: list[Any],
+    allow_mutations: bool = False,
+    scoped_greenhouse_id: int | None = None,
+) -> tuple[list[dict[str, Any]], set[str]]:
     definitions: list[dict[str, Any]] = []
+    allowed_tool_names: set[str] = set()
     for tool in mcp_tools:
-        if not tool_is_allowed(tool.name):
+        if not tool_is_allowed(tool.name, allow_mutations=allow_mutations):
             continue
+        if (
+            scoped_greenhouse_id is not None
+            and tool.name == "list_greenhouses_api_greenhouses_get"
+        ):
+            continue
+        allowed_tool_names.add(tool.name)
         definitions.append(
             {
                 "type": "function",
@@ -166,19 +419,155 @@ def build_tool_definitions(mcp_tools: list[Any]) -> list[dict[str, Any]]:
                 },
             }
         )
-    return definitions
+    return definitions, allowed_tool_names
 
 
-@router.post("/ai/chat", response_model=ChatRequestResponse)
-async def chat_endpoint(
+def make_chat_title(message: str) -> str:
+    title = " ".join(message.strip().split())
+    return title[:117] + "..." if len(title) > 120 else title
+
+
+def resolve_chat_session(
+    db: Session,
+    *,
+    current_user: User,
+    body: ChatRequest,
+    scope: ChatScope,
+    greenhouse_id: int | None,
+) -> ChatSession:
+    if body.session_id is not None:
+        session = db.get(ChatSession, body.session_id)
+        if session is None or session.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Chat session not found",
+            )
+        if session.scope != scope or session.greenhouse_id != greenhouse_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Chat session scope mismatch",
+            )
+        return session
+
+    session = ChatSession(
+        owner_id=current_user.id,
+        greenhouse_id=greenhouse_id,
+        scope=scope,
+        title=make_chat_title(body.message),
+    )
+    db.add(session)
+    db.flush()
+    return session
+
+
+def persist_chat_turn(
+    db: Session, *, session: ChatSession, user_message: str, assistant_reply: str
+) -> None:
+    now = utc_now_naive()
+    session.updated_at = now
+    db.add(session)
+    db.add(
+        ChatMessage(
+            session_id=session.id,
+            role=ChatRole.USER,
+            content=user_message,
+            created_at=now,
+        )
+    )
+    db.add(
+        ChatMessage(
+            session_id=session.id,
+            role=ChatRole.ASSISTANT,
+            content=assistant_reply,
+            created_at=utc_now_naive(),
+        )
+    )
+
+
+@router.get("/ai/sessions", response_model=list[ChatSessionRead])
+def list_chat_sessions(
+    greenhouse_id: int | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ChatSessionRead]:
+    if greenhouse_id is not None:
+        greenhouse = db.get(Greenhouse, greenhouse_id)
+        if greenhouse is None or not user_can_access_greenhouse(
+            db, current_user.id, greenhouse
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Greenhouse not found",
+            )
+
+    statement = select(ChatSession).where(ChatSession.owner_id == current_user.id)
+    if greenhouse_id is not None:
+        statement = statement.where(ChatSession.greenhouse_id == greenhouse_id)
+    statement = statement.order_by(ChatSession.updated_at.desc()).limit(50)
+    return [ChatSessionRead.model_validate(session) for session in db.exec(statement).all()]
+
+
+@router.get("/ai/sessions/{session_id}/messages", response_model=list[ChatMessageRead])
+def list_chat_messages(
+    session_id: int,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[ChatMessageRead]:
+    session = db.get(ChatSession, session_id)
+    if session is None or session.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat session not found",
+        )
+
+    messages = db.exec(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session.id)
+        .order_by(ChatMessage.created_at, ChatMessage.id)
+        .offset(skip)
+        .limit(limit)
+    ).all()
+    return [ChatMessageRead.model_validate(message) for message in messages]
+
+
+async def run_chat_request(
+    *,
     request: Request,
     body: ChatRequest,
-    current_user: User = Depends(get_current_user),
-):
+    current_user: User,
+    db: Session,
+    greenhouse: Greenhouse | None = None,
+) -> ChatRequestResponse:
     llm_client = get_ai_client()
     mcp_instance = getattr(request.app.state, "mcp", None)
     client_class = get_mcp_client_class()
-    messages = build_messages(body)
+    scope = ChatScope.GREENHOUSE if greenhouse is not None else ChatScope.GLOBAL
+    greenhouse_id = greenhouse.id if greenhouse is not None else None
+
+    if greenhouse is not None:
+        tenant = get_greenhouse_tenant(db, greenhouse, current_user)
+        system_prompt = build_scoped_system_prompt(db, greenhouse)
+    else:
+        tenant = ensure_personal_tenant(db, current_user)
+        system_prompt = build_global_system_prompt(db, current_user)
+
+    enforce_ai_message_limit(db, tenant)
+    session = resolve_chat_session(
+        db,
+        current_user=current_user,
+        body=body,
+        scope=scope,
+        greenhouse_id=greenhouse_id,
+    )
+    persisted_history = history_from_session(db, session) if body.session_id else None
+    messages = build_messages(
+        body,
+        system_prompt=system_prompt,
+        persisted_history=persisted_history,
+    )
+    allow_mutations = mutation_confirmation_present(body.message)
     token = ctx_user.set(current_user)
 
     try:
@@ -191,22 +580,95 @@ async def chat_endpoint(
         if tool_client is not None:
             async with tool_client as active_tool_client:
                 mcp_tools = await active_tool_client.list_tools()
-                tool_definitions = build_tool_definitions(mcp_tools)
-                return await run_chat_completion(
+                tool_definitions, allowed_tool_names = build_tool_definitions(
+                    mcp_tools,
+                    allow_mutations=allow_mutations,
+                    scoped_greenhouse_id=greenhouse_id,
+                )
+                response = await run_chat_completion(
                     llm_client=llm_client,
                     messages=messages,
                     tool_definitions=tool_definitions,
+                    allowed_tool_names=allowed_tool_names,
                     tool_client=active_tool_client,
+                    session_id=session.id,
+                    scoped_greenhouse_id=greenhouse_id,
                 )
+                persist_chat_turn(
+                    db,
+                    session=session,
+                    user_message=body.message,
+                    assistant_reply=response.reply,
+                )
+                record_usage_event(
+                    db,
+                    tenant_id=tenant.id,
+                    user_id=current_user.id,
+                    event_type="ai_chat_message",
+                    metadata={"scope": scope.value, "greenhouse_id": greenhouse_id},
+                )
+                db.commit()
+                return response
 
-        return await run_chat_completion(
+        response = await run_chat_completion(
             llm_client=llm_client,
             messages=messages,
             tool_definitions=[],
+            allowed_tool_names=set(),
             tool_client=None,
+            session_id=session.id,
+            scoped_greenhouse_id=greenhouse_id,
         )
+        persist_chat_turn(
+            db,
+            session=session,
+            user_message=body.message,
+            assistant_reply=response.reply,
+        )
+        record_usage_event(
+            db,
+            tenant_id=tenant.id,
+            user_id=current_user.id,
+            event_type="ai_chat_message",
+            metadata={"scope": scope.value, "greenhouse_id": greenhouse_id},
+        )
+        db.commit()
+        return response
     finally:
         ctx_user.reset(token)
+
+
+@router.post("/ai/chat", response_model=ChatRequestResponse)
+async def chat_endpoint(
+    request: Request,
+    body: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return await run_chat_request(
+        request=request,
+        body=body,
+        current_user=current_user,
+        db=db,
+        greenhouse=None,
+    )
+
+
+@router.post("/greenhouses/{greenhouse_id}/ai/chat", response_model=ChatRequestResponse)
+async def greenhouse_chat_endpoint(
+    request: Request,
+    body: ChatRequest,
+    greenhouse: Greenhouse = Depends(get_authorized_greenhouse),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return await run_chat_request(
+        request=request,
+        body=body,
+        current_user=current_user,
+        db=db,
+        greenhouse=greenhouse,
+    )
 
 
 async def run_chat_completion(
@@ -214,7 +676,10 @@ async def run_chat_completion(
     llm_client: Any,
     messages: list[dict[str, Any]],
     tool_definitions: list[dict[str, Any]],
+    allowed_tool_names: set[str],
     tool_client: Any,
+    session_id: int | None = None,
+    scoped_greenhouse_id: int | None = None,
 ) -> ChatRequestResponse:
     completion_kwargs: dict[str, Any] = {
         "model": settings.AI_CHAT_MODEL,
@@ -229,41 +694,66 @@ async def run_chat_completion(
     except HTTPException:
         raise
     except Exception as exc:
+        logger.exception("AI provider request failed")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"AI provider request failed: {exc}",
+            detail="AI provider request failed",
         ) from exc
 
     response_message = response.choices[0].message
     tool_calls = list(getattr(response_message, "tool_calls", None) or [])
-    if tool_calls and tool_client is not None:
-        messages.append(dump_message(response_message))
 
-        for tool_call in tool_calls:
-            arguments = getattr(tool_call.function, "arguments", "{}")
-            try:
-                tool_args = json.loads(arguments or "{}")
-            except json.JSONDecodeError:
-                tool_args = {}
+    # Fallback: Deepseek sometimes emits tool calls as DSML text in content
+    dsml_parsed: list[ParsedToolCall] = []
+    if not tool_calls and tool_client is not None:
+        raw_content = extract_message_text(response_message.content)
+        prefix_text, dsml_parsed = parse_dsml_tool_calls(raw_content)
 
-            try:
-                result = await tool_client.call_tool(tool_call.function.name, tool_args)
-                tool_content = (
-                    result.content[0].text
-                    if result and getattr(result, "content", None)
-                    else "Success"
+    if (tool_calls or dsml_parsed) and tool_client is not None:
+        if tool_calls:
+            # Standard structured tool calls
+            messages.append(dump_message(response_message))
+            for tool_call in tool_calls:
+                arguments = getattr(tool_call.function, "arguments", "{}")
+                try:
+                    tool_args = json.loads(arguments or "{}")
+                except json.JSONDecodeError:
+                    tool_args = {}
+                await _execute_tool_call(
+                    messages,
+                    tool_client,
+                    allowed_tool_names,
+                    tool_call.id,
+                    tool_call.function.name,
+                    tool_args,
+                    scoped_greenhouse_id=scoped_greenhouse_id,
                 )
-            except Exception as exc:
-                tool_content = f"Error: {exc}"
-
-            messages.append(
+        else:
+            # DSML-parsed tool calls
+            assistant_text = prefix_text if prefix_text else "Buyruqni bajarayapman..."
+            tc_dicts = [
                 {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "name": tool_call.function.name,
-                    "content": str(tool_content),
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
                 }
-            )
+                for tc in dsml_parsed
+            ]
+            messages.append({
+                "role": "assistant",
+                "content": assistant_text,
+                "tool_calls": tc_dicts,
+            })
+            for tc in dsml_parsed:
+                await _execute_tool_call(
+                    messages,
+                    tool_client,
+                    allowed_tool_names,
+                    tc.id,
+                    tc.name,
+                    tc.arguments,
+                    scoped_greenhouse_id=scoped_greenhouse_id,
+                )
 
         try:
             final_response = await llm_client.chat.completions.create(
@@ -271,9 +761,10 @@ async def run_chat_completion(
                 messages=messages,
             )
         except Exception as exc:
+            logger.exception("AI provider final response request failed")
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"AI provider request failed: {exc}",
+                detail="AI provider request failed",
             ) from exc
 
         final_text = extract_message_text(final_response.choices[0].message.content)
@@ -282,7 +773,7 @@ async def run_chat_completion(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="AI provider returned an empty final response",
             )
-        return ChatRequestResponse(reply=final_text)
+        return ChatRequestResponse(reply=final_text, session_id=session_id)
 
     reply = extract_message_text(response_message.content)
     if not reply:
@@ -290,4 +781,58 @@ async def run_chat_completion(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="AI provider returned an empty response",
         )
-    return ChatRequestResponse(reply=reply)
+    return ChatRequestResponse(reply=reply, session_id=session_id)
+
+
+async def _execute_tool_call(
+    messages: list[dict[str, Any]],
+    tool_client: Any,
+    allowed_tool_names: set[str],
+    call_id: str,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    *,
+    scoped_greenhouse_id: int | None = None,
+) -> None:
+    try:
+        if tool_name not in allowed_tool_names:
+            tool_content = "Error: Tool is not allowed for this request."
+        elif scoped_greenhouse_id is not None and "greenhouse_id" in tool_args:
+            try:
+                requested_greenhouse_id = int(tool_args["greenhouse_id"])
+            except (TypeError, ValueError):
+                requested_greenhouse_id = None
+            if requested_greenhouse_id not in {None, scoped_greenhouse_id}:
+                tool_content = (
+                    f"Error: This scoped chat can only access greenhouse "
+                    f"{scoped_greenhouse_id}."
+                )
+            else:
+                tool_args["greenhouse_id"] = scoped_greenhouse_id
+                result = await tool_client.call_tool(tool_name, tool_args)
+                tool_content = (
+                    result.content[0].text
+                    if result and getattr(result, "content", None)
+                    else "Success"
+                )
+        else:
+            if scoped_greenhouse_id is not None and "__greenhouse_id__" in tool_name:
+                tool_args["greenhouse_id"] = scoped_greenhouse_id
+            result = await tool_client.call_tool(tool_name, tool_args)
+            tool_content = (
+                result.content[0].text
+                if result and getattr(result, "content", None)
+                else "Success"
+            )
+    except Exception:
+        logger.exception("Tool call failed for tool=%s", tool_name)
+        tool_content = "Error: tool execution failed"
+
+    messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "name": tool_name,
+            "content": str(tool_content),
+        }
+    )

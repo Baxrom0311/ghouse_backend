@@ -1,10 +1,12 @@
 # models/greenhouse.py
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel
 from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, Relationship, SQLModel
+
+from app.core.time import utc_now_naive
 
 from .plant import Plant
 from .telemetry import Telemetry
@@ -41,9 +43,11 @@ class Greenhouse(GreenhouseBase, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
+        default_factory=utc_now_naive,
+        index=True,
     )
-    owner_id: int = Field(foreign_key="user.id")
+    owner_id: int = Field(foreign_key="user.id", index=True)
+    tenant_id: int | None = Field(default=None, foreign_key="tenant.id", index=True)
     pending_mqtt_topic_id: str | None = None
     mqtt_topic_update_token: str | None = None
 
@@ -61,6 +65,7 @@ class GreenhouseCreate(GreenhouseBase):
 
 class GreenhouseRead(GreenhouseBase):
     id: int
+    tenant_id: int | None = None
     created_at: datetime
     stats: GreenhouseStats
 

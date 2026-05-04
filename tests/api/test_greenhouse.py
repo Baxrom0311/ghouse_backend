@@ -4,10 +4,10 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, delete, select
 
-from app.api.routes import device as device_route
 from app.api.routes import greenhouse as greenhouse_route
 from app.models import Device, Greenhouse, Plant, Telemetry
-from worker.ingestion import apply_topic_id_ack
+from app.services import command_service
+from worker.ingestion import apply_device_command_ack, apply_topic_id_ack
 
 
 def test_create_greenhouse(login_client: TestClient, db_session: Session):
@@ -57,7 +57,7 @@ def test_device_settings_persist_after_reads(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        device_route.mqtt_service,
+        command_service.mqtt_service,
         "publish_device_command",
         lambda *args, **kwargs: True,
     )
@@ -89,6 +89,92 @@ def test_device_settings_persist_after_reads(
     assert temperature_device["max_value"] == 27
 
 
+def test_bulk_device_settings_persist_and_publish_once(
+    login_client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    published_commands: list[tuple[str, object, bool]] = []
+
+    def fake_publish(topic: str, payload: object, retain: bool = False) -> bool:
+        published_commands.append((topic, payload, retain))
+        return True
+
+    monkeypatch.setattr(
+        command_service.mqtt_service,
+        "publish_device_command",
+        fake_publish,
+    )
+
+    create_response = login_client.post(
+        "/api/greenhouses",
+        json={"name": "Bulk Settings Greenhouse", "mqtt_topic_id": "bulk-device"},
+    )
+    greenhouse_id = create_response.json()["id"]
+
+    response = login_client.post(
+        f"/api/greenhouses/{greenhouse_id}/devices/settings",
+        json={
+            "temperature": {"min": 19.2, "max": 27.6},
+            "humidity": {"min": 41, "max": 72},
+            "moisture": {"min": 36, "max": 68},
+            "air": {"min": 450, "max": 1000},
+            "light": {"min": 25, "max": 65},
+        },
+    )
+
+    assert response.status_code == 200
+    command_id = response.json()["command_id"]
+    assert len(published_commands) == 1
+    assert published_commands[0] == (
+        "bulk-device/settings",
+        {
+            "temperature": {"min": 19, "max": 28},
+            "humidity": {"min": 41, "max": 72},
+            "moisture": {"min": 36, "max": 68},
+            "air": {"min": 450, "max": 1000},
+            "light": {"min": 25, "max": 65},
+            "command_id": command_id,
+        },
+        True,
+    )
+
+    temperature_device = db_session.exec(
+        select(Device)
+        .where(Device.greenhouse_id == greenhouse_id)
+        .where(Device.name == "temperature")
+    ).first()
+    assert temperature_device is not None
+    assert temperature_device.min_value == 19
+    assert temperature_device.max_value == 28
+
+    command_response = login_client.get(
+        f"/api/greenhouses/{greenhouse_id}/commands/{command_id}"
+    )
+    assert command_response.status_code == 200
+    assert command_response.json()["status"] == "published"
+
+    assert (
+        apply_device_command_ack(
+            db_session,
+            json.dumps(
+                {
+                    "command_id": command_id,
+                    "status": "acknowledged",
+                    "message": "applied",
+                }
+            ),
+        )
+        is True
+    )
+
+    acknowledged_response = login_client.get(
+        f"/api/greenhouses/{greenhouse_id}/commands/{command_id}"
+    )
+    assert acknowledged_response.status_code == 200
+    assert acknowledged_response.json()["status"] == "acknowledged"
+
+
 def test_greenhouse_topic_change_publishes_migration_command(
     login_client: TestClient,
     db_session: Session,
@@ -101,7 +187,7 @@ def test_greenhouse_topic_change_publishes_migration_command(
         return True
 
     monkeypatch.setattr(
-        device_route.mqtt_service,
+        greenhouse_route.mqtt_service,
         "publish_device_command",
         fake_publish,
     )
@@ -157,7 +243,7 @@ def test_greenhouse_topic_change_ack_requires_matching_pending_token(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        device_route.mqtt_service,
+        greenhouse_route.mqtt_service,
         "publish_device_command",
         lambda *args, **kwargs: True,
     )
@@ -196,7 +282,7 @@ def test_greenhouse_topic_change_ack_requires_token(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        device_route.mqtt_service,
+        greenhouse_route.mqtt_service,
         "publish_device_command",
         lambda *args, **kwargs: True,
     )
@@ -233,7 +319,7 @@ def test_greenhouse_topic_id_reserved_during_pending_migration(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        device_route.mqtt_service,
+        greenhouse_route.mqtt_service,
         "publish_device_command",
         lambda *args, **kwargs: True,
     )
@@ -264,7 +350,7 @@ def test_greenhouse_topic_change_publish_failure_does_not_persist_other_updates(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        device_route.mqtt_service,
+        greenhouse_route.mqtt_service,
         "publish_device_command",
         lambda *args, **kwargs: False,
     )

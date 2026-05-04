@@ -1,8 +1,10 @@
 # telemetry.py
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 
 from sqlmodel import Field, Relationship, SQLModel
+
+from app.core.time import utc_now_naive
 
 
 class DeviceName(str, Enum):
@@ -42,9 +44,10 @@ class TelemetryBase(SQLModel):
 class Telemetry(TelemetryBase, table=True):
     id: int | None = Field(default=None, primary_key=True)
     time: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None)
+        default_factory=utc_now_naive,
+        index=True,
     )
-    greenhouse_id: int = Field(foreign_key="greenhouse.id")
+    greenhouse_id: int = Field(foreign_key="greenhouse.id", index=True)
 
     # Relationships
     # device: "Device" = Relationship(back_populates="telemetry")

@@ -20,5 +20,8 @@ COPY worker/ ./worker/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./alembic.ini
 
+RUN addgroup --system app && adduser --system --ingroup app app
+USER app
+
 # Run the worker
 CMD ["python", "-m", "worker.ingestion"]

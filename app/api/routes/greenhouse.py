@@ -1,17 +1,31 @@
 import secrets
-from datetime import datetime, timedelta, timezone
+import asyncio
+import logging
+from datetime import timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, status
+from fastapi.concurrency import run_in_threadpool
+from fastapi.encoders import jsonable_encoder
+from starlette.websockets import WebSocketDisconnect
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy import and_, delete, func
+from sqlalchemy import and_, delete, func, or_
 from sqlmodel import Session, select
 
-from app.api.deps import get_authorized_greenhouse, get_current_user, get_db
+from app.api.deps import (
+    assert_can_modify_greenhouse,
+    get_authorized_greenhouse,
+    get_current_user,
+    get_db,
+)
 from app.core.config import settings
 from app.core.db import build_unique_topic_id
-from app.models.device import Device
+from app.core.db import engine
+from app.core.security import decode_access_token
+from app.core.time import utc_now_naive
+from app.models.chat import ChatMessage, ChatSession
+from app.models.command import CommandRead, CommandResponse, CommandStatus, DeviceCommand
+from app.models.device import Device, DeviceRead
 from app.models.greenhouse import (
     Greenhouse,
     GreenhouseCreate,
@@ -22,13 +36,21 @@ from app.models.greenhouse import (
 from app.models.plant import Plant
 from app.models.telemetry import Telemetry, TelemetryRead
 from app.models.user import User
+from app.services.command_service import publish_tracked_command, serialize_command
 from app.services.device_registry import ensure_greenhouse_devices
 from app.services.mqtt_service import mqtt_service
+from app.services.tenant_service import (
+    enforce_greenhouse_limit,
+    ensure_personal_tenant,
+    get_user_tenant_ids,
+)
 
 router = APIRouter(prefix="/greenhouses", tags=["greenhouses"])
+logger = logging.getLogger(__name__)
 INVALID_MQTT_TOPIC_ID_CHARS = {"/", "+", "#"}
 TOPIC_ID_UPDATE_SUFFIX = "/system/topic_id"
 MAX_AUTO_TOPIC_RETRIES = 3
+GREENHOUSE_STREAM_INTERVAL_SECONDS = 3
 
 
 def collect_reserved_topic_ids(greenhouses: list[Greenhouse]) -> set[str]:
@@ -76,9 +98,16 @@ def resolve_mqtt_topic_id(
 ) -> str:
     topic_id = (requested_topic_id or "").strip()
     if not topic_id:
-        greenhouses = db.exec(select(Greenhouse).order_by(Greenhouse.id)).all()
-        used_topic_ids = collect_reserved_topic_ids(greenhouses)
-        next_greenhouse_id = max((existing.id or 0 for existing in greenhouses), default=0) + 1
+        # Optimization: Only fetch the IDs and Topic IDs, not full objects
+        results = db.exec(select(Greenhouse.id, Greenhouse.mqtt_topic_id, Greenhouse.pending_mqtt_topic_id)).all()
+        used_topic_ids = set()
+        max_id = 0
+        for g_id, tid, ptid in results:
+            if tid: used_topic_ids.add(tid.strip())
+            if ptid: used_topic_ids.add(ptid.strip())
+            if g_id > max_id: max_id = g_id
+        
+        next_greenhouse_id = max_id + 1
         return build_unique_topic_id(
             used_topic_ids,
             next_greenhouse_id,
@@ -171,7 +200,7 @@ def telemetry_history_for_greenhouse(
 ) -> list[Telemetry]:
     statement = select(Telemetry).where(Telemetry.greenhouse_id == greenhouse_id)
     if hours > 0:
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=hours)
+        cutoff = utc_now_naive() - timedelta(hours=hours)
         statement = statement.where(Telemetry.time >= cutoff)
 
     statement = statement.order_by(Telemetry.time.desc()).limit(limit)
@@ -186,9 +215,105 @@ def serialize_greenhouse(
         name=greenhouse.name,
         ai_mode=greenhouse.ai_mode,
         mqtt_topic_id=greenhouse.mqtt_topic_id,
+        tenant_id=greenhouse.tenant_id,
         created_at=greenhouse.created_at,
         stats=telemetry_to_stats(greenhouse, telemetry),
     )
+
+
+def accessible_greenhouses_statement(user_id: int, tenant_ids: list[int]):
+    if tenant_ids:
+        return select(Greenhouse).where(
+            or_(Greenhouse.owner_id == user_id, Greenhouse.tenant_id.in_(tenant_ids))
+        )
+    return select(Greenhouse).where(Greenhouse.owner_id == user_id)
+
+
+def greenhouse_snapshot_payload(db: Session, user_id: int) -> dict:
+    tenant_ids = get_user_tenant_ids(db, user_id)
+    statement = accessible_greenhouses_statement(user_id, tenant_ids)
+    greenhouses: list[Greenhouse] = db.exec(statement).all()
+    gh_ids = [greenhouse.id for greenhouse in greenhouses]
+    
+    latest_by_greenhouse = latest_telemetry_by_greenhouse(db, gh_ids)
+    
+    # Batch fetch devices for all greenhouses to avoid N+1
+    all_devices_statement = select(Device).where(Device.greenhouse_id.in_(gh_ids))
+    all_devices = db.exec(all_devices_statement).all()
+    devices_by_gh: dict[int, list[Device]] = {}
+    for device in all_devices:
+        devices_by_gh.setdefault(device.greenhouse_id, []).append(device)
+
+    return {
+        "greenhouses": [
+            {
+                "greenhouse": serialize_greenhouse(
+                    greenhouse,
+                    latest_by_greenhouse.get(greenhouse.id),
+                ),
+                "devices": [
+                    DeviceRead.model_validate(device)
+                    for device in devices_by_gh.get(greenhouse.id, [])
+                ],
+            }
+            for greenhouse in greenhouses
+        ]
+    }
+
+
+def websocket_user_id(token: str | None) -> int | None:
+    if not token:
+        return None
+    payload = decode_access_token(token)
+    if payload is None:
+        return None
+    try:
+        return int(payload.get("sub"))
+    except (TypeError, ValueError):
+        return None
+
+
+def websocket_protocol_token(websocket: WebSocket) -> str | None:
+    protocol_header = websocket.headers.get("sec-websocket-protocol")
+    if not protocol_header:
+        return None
+    protocols = [item.strip() for item in protocol_header.split(",")]
+    if "agroai.auth" not in protocols:
+        return None
+    for protocol in protocols:
+        if protocol != "agroai.auth":
+            return protocol
+    return None
+
+
+@router.websocket("/ws")
+async def greenhouses_ws(websocket: WebSocket, token: str | None = Query(default=None)):
+    protocol_token = websocket_protocol_token(websocket)
+    auth_token = protocol_token or token
+    user_id = websocket_user_id(auth_token)
+    if user_id is None:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept(subprotocol="agroai.auth" if protocol_token else None)
+
+    def _get_snapshot_if_active(uid: int):
+        with Session(engine) as db:
+            user = db.get(User, uid)
+            if user is None or not user.is_active:
+                return None
+            return greenhouse_snapshot_payload(db, uid)
+
+    try:
+        while True:
+            snapshot = await run_in_threadpool(_get_snapshot_if_active, user_id)
+            if snapshot is None:
+                await websocket.close(code=1008)
+                return
+            await websocket.send_json(jsonable_encoder(snapshot))
+            await asyncio.sleep(GREENHOUSE_STREAM_INTERVAL_SECONDS)
+    except WebSocketDisconnect:
+        return
 
 
 @router.post("", response_model=GreenhouseRead, status_code=status.HTTP_201_CREATED)
@@ -198,6 +323,9 @@ def create_greenhouse(
     db: Session = Depends(get_db),
 ):
     """Create a new greenhouse."""
+    tenant = ensure_personal_tenant(db, current_user)
+    enforce_greenhouse_limit(db, tenant)
+
     for attempt in range(MAX_AUTO_TOPIC_RETRIES):
         mqtt_topic_id = resolve_mqtt_topic_id(db, greenhouse_data.mqtt_topic_id)
         db_greenhouse = Greenhouse(
@@ -205,6 +333,7 @@ def create_greenhouse(
             ai_mode=greenhouse_data.ai_mode,
             mqtt_topic_id=mqtt_topic_id,
             owner_id=current_user.id,
+            tenant_id=tenant.id,
         )
         db.add(db_greenhouse)
         try:
@@ -237,12 +366,16 @@ def create_greenhouse(
 
 @router.get("", response_model=list[GreenhouseRead])
 def list_greenhouses(
-    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
-) -> list[GreenhouseRead]:
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+):
     """List all greenhouses owned by the current user."""
 
-    statement = select(Greenhouse).where(Greenhouse.owner_id == current_user.id)
-    greenhouses: list[Greenhouse] = db.exec(statement).all()
+    tenant_ids = get_user_tenant_ids(db, current_user.id)
+    statement = accessible_greenhouses_statement(current_user.id, tenant_ids)
+    greenhouses: list[Greenhouse] = db.exec(statement.offset(skip).limit(limit)).all()
     latest_by_greenhouse = latest_telemetry_by_greenhouse(
         db, [greenhouse.id for greenhouse in greenhouses]
     )
@@ -277,12 +410,30 @@ def list_greenhouse_telemetry(
     return [TelemetryRead.model_validate(point) for point in telemetry]
 
 
+@router.get("/{greenhouse_id}/commands/{command_id}", response_model=CommandRead)
+def get_device_command(
+    command_id: str,
+    greenhouse: Greenhouse = Depends(get_authorized_greenhouse),
+    db: Session = Depends(get_db),
+):
+    command = db.get(DeviceCommand, command_id)
+    if command is None or command.greenhouse_id != greenhouse.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Command not found",
+        )
+
+    return serialize_command(command)
+
+
 @router.patch("/{greenhouse_id}", response_model=GreenhouseRead)
 def edit_greenhouse(
     greenhouse_update: GreenhouseUpdate,
     greenhouse: Greenhouse = Depends(get_authorized_greenhouse),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    assert_can_modify_greenhouse(db, current_user, greenhouse)
     update_data = greenhouse_update.model_dump(exclude_unset=True)
     topic_update_payload: dict[str, str] | None = None
     current_topic_id = (greenhouse.mqtt_topic_id or settings.DEFAULT_MQTT_TOPIC_ID).strip()
@@ -336,39 +487,61 @@ def edit_greenhouse(
 @router.delete("/{greenhouse_id}")
 def delete_greenhouse(
     greenhouse: Greenhouse = Depends(get_authorized_greenhouse),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    db.exec(delete(Device).where(Device.greenhouse_id == greenhouse.id))
-    db.exec(delete(Plant).where(Plant.greenhouse_id == greenhouse.id))
-    db.exec(delete(Telemetry).where(Telemetry.greenhouse_id == greenhouse.id))
-    db.delete(greenhouse)
-    db.commit()
+    assert_can_modify_greenhouse(db, current_user, greenhouse)
+    try:
+        chat_sessions = db.exec(
+            select(ChatSession).where(ChatSession.greenhouse_id == greenhouse.id)
+        ).all()
+        for chat_session in chat_sessions:
+            db.exec(delete(ChatMessage).where(ChatMessage.session_id == chat_session.id))
+            db.delete(chat_session)
+        db.exec(delete(Device).where(Device.greenhouse_id == greenhouse.id))
+        db.exec(delete(Plant).where(Plant.greenhouse_id == greenhouse.id))
+        db.exec(delete(Telemetry).where(Telemetry.greenhouse_id == greenhouse.id))
+        db.exec(delete(DeviceCommand).where(DeviceCommand.greenhouse_id == greenhouse.id))
+        db.delete(greenhouse)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.exception("Failed to delete greenhouse id=%s", greenhouse.id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete greenhouse",
+        ) from e
     return {"ok": True}
 
 
-class ResponseOK(BaseModel):
-    ok: bool = True
-
-@router.post("/{greenhouse_id}/ai/switch/{state}", response_model=ResponseOK)
+@router.post("/{greenhouse_id}/ai/switch/{state}", response_model=CommandResponse)
 def switch_mode_ai_control(
     state: Literal["on", "off"],
     greenhouse: Greenhouse = Depends(get_authorized_greenhouse),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    assert_can_modify_greenhouse(db, current_user, greenhouse)
     rev = {"off": "0", "on": "1"}
     mqtt_topic_id = greenhouse.mqtt_topic_id or settings.DEFAULT_MQTT_TOPIC_ID
-    ok = mqtt_service.publish_device_command(f"{mqtt_topic_id}/mode/ai", rev[state])
-    if not ok:
+    command = publish_tracked_command(
+        db,
+        greenhouse_id=greenhouse.id,
+        command_type="ai_mode_switch",
+        topic=f"{mqtt_topic_id}/mode/ai",
+        payload=rev[state],
+    )
+    if command.status == CommandStatus.FAILED:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="MQTT broker unavailable",
+            detail=command.error or "MQTT broker unavailable",
         )
 
     greenhouse.ai_mode = state == "on"
     db.add(greenhouse)
     db.commit()
 
-    return {"ok": True}
+    return CommandResponse(command_id=command.id, status=command.status)
 
 
 from .device import router as device_router

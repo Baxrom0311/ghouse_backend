@@ -1,7 +1,9 @@
 import json
 import logging
+import ssl
 from typing import Optional
 
+import certifi
 import paho.mqtt.client as mqtt
 
 from app.core.config import settings
@@ -14,7 +16,6 @@ class MQTTService:
 
     def __init__(self):
         self.client: Optional[mqtt.Client] = None
-        self._connect()
 
     def _connect(self):
         """Initialize MQTT client connection."""
@@ -24,6 +25,13 @@ class MQTTService:
                 settings.MQTT_USERNAME,
                 settings.MQTT_PASSWORD or None,
             )
+        if settings.MQTT_TLS_ENABLED:
+            self.client.tls_set(
+                ca_certs=settings.MQTT_TLS_CA_CERTS or certifi.where(),
+                cert_reqs=ssl.CERT_REQUIRED,
+                tls_version=ssl.PROTOCOL_TLS_CLIENT,
+            )
+            self.client.tls_insecure_set(False)
         try:
             self.client.connect(
                 settings.MQTT_BROKER_HOST, settings.MQTT_BROKER_PORT, 60
@@ -69,6 +77,7 @@ class MQTTService:
 
         try:
             result = self.client.publish(command_topic, payload, qos=1, retain=retain)
+            result.wait_for_publish(timeout=5)
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
                 logger.info("Published MQTT message to %s", command_topic)
                 return True

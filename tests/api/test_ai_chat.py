@@ -2,8 +2,10 @@ import json
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
+from sqlmodel import Session, select
 
 from app.api.routes import ai_chat
+from app.models.chat import ChatMessage, ChatScope, ChatSession
 
 
 class FakeMessage:
@@ -91,7 +93,9 @@ def test_ai_chat_basic_reply(login_client: TestClient, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"reply": "Mocked reply"}
+    data = response.json()
+    assert data["reply"] == "Mocked reply"
+    assert isinstance(data["session_id"], int)
     assert fake_ai_client.chat.completions.calls[0]["model"] == "deepseek-chat"
 
 
@@ -119,7 +123,9 @@ def test_ai_chat_tool_flow(login_client: TestClient, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json() == {"reply": "Greenhouse 1 is healthy."}
+    data = response.json()
+    assert data["reply"] == "Greenhouse 1 is healthy."
+    assert isinstance(data["session_id"], int)
     assert len(fake_ai_client.chat.completions.calls) == 2
 
 
@@ -145,15 +151,107 @@ def test_ai_chat_ignores_client_system_and_tool_history(
 
     assert response.status_code == 200
     sent_messages = fake_ai_client.chat.completions.calls[0]["messages"]
-    assert sent_messages == [
-        {
-            "role": "system",
-            "content": (
-                "You are a helpful greenhouse assistant. "
-                "Use greenhouse id 1 if the user asks for a greenhouse action "
-                "without specifying an id."
-            ),
-        },
+    assert sent_messages[0]["role"] == "system"
+    assert "Do not assume greenhouse id 1" in sent_messages[0]["content"]
+    assert "Accessible greenhouse context JSON" in sent_messages[0]["content"]
+    assert sent_messages[1:] == [
         {"role": "assistant", "content": "Previous answer"},
         {"role": "user", "content": "Hello assistant"},
+    ]
+
+
+def test_ai_chat_hides_mutating_tools_without_confirmation():
+    tools = [
+        SimpleNamespace(
+            name="list_greenhouses_api_greenhouses_get",
+            description="List greenhouses",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        SimpleNamespace(
+            name="device_switch_on_off_api_greenhouses__greenhouse_id__devices__device_name__switch__device_state__post",
+            description="Switch a device",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        SimpleNamespace(
+            name="delete_greenhouse_api_greenhouses__greenhouse_id__delete",
+            description="Delete a greenhouse",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+    ]
+
+    definitions, allowed_tool_names = ai_chat.build_tool_definitions(
+        tools, allow_mutations=False
+    )
+
+    assert allowed_tool_names == {"list_greenhouses_api_greenhouses_get"}
+    assert [tool["function"]["name"] for tool in definitions] == [
+        "list_greenhouses_api_greenhouses_get"
+    ]
+
+
+def test_ai_chat_allows_confirmed_control_tools_but_not_delete_tools():
+    tools = [
+        SimpleNamespace(
+            name="device_switch_on_off_api_greenhouses__greenhouse_id__devices__device_name__switch__device_state__post",
+            description="Switch a device",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        SimpleNamespace(
+            name="delete_greenhouse_api_greenhouses__greenhouse_id__delete",
+            description="Delete a greenhouse",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+    ]
+
+    definitions, allowed_tool_names = ai_chat.build_tool_definitions(
+        tools, allow_mutations=True
+    )
+
+    assert allowed_tool_names == {
+        "device_switch_on_off_api_greenhouses__greenhouse_id__devices__device_name__switch__device_state__post"
+    }
+    assert [tool["function"]["name"] for tool in definitions] == [
+        "device_switch_on_off_api_greenhouses__greenhouse_id__devices__device_name__switch__device_state__post"
+    ]
+
+
+def test_scoped_greenhouse_chat_uses_greenhouse_context(
+    login_client: TestClient, db_session: Session, monkeypatch
+):
+    create_response = login_client.post(
+        "/api/greenhouses",
+        json={"name": "Scoped AI Greenhouse", "mqtt_topic_id": "scoped-ai"},
+    )
+    assert create_response.status_code == 201
+    greenhouse_id = create_response.json()["id"]
+    fake_ai_client = FakeAIClient([FakeResponse(FakeMessage(content="Scoped reply"))])
+
+    monkeypatch.setattr(ai_chat, "get_ai_client", lambda: fake_ai_client)
+    monkeypatch.setattr(ai_chat, "get_mcp_client_class", lambda: None)
+
+    response = login_client.post(
+        f"/api/greenhouses/{greenhouse_id}/ai/chat",
+        json={"message": "Holatini ayt", "history": []},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["reply"] == "Scoped reply"
+    assert isinstance(data["session_id"], int)
+
+    sent_messages = fake_ai_client.chat.completions.calls[0]["messages"]
+    assert sent_messages[0]["role"] == "system"
+    assert f"greenhouse id {greenhouse_id}" in sent_messages[0]["content"]
+    assert "Never ask for a greenhouse id in this scoped chat" in sent_messages[0]["content"]
+
+    session = db_session.get(ChatSession, data["session_id"])
+    assert session is not None
+    assert session.scope == ChatScope.GREENHOUSE
+    assert session.greenhouse_id == greenhouse_id
+    saved_messages = db_session.exec(
+        select(ChatMessage).where(ChatMessage.session_id == session.id)
+    ).all()
+    assert [message.content for message in saved_messages] == [
+        "Holatini ayt",
+        "Scoped reply",
     ]

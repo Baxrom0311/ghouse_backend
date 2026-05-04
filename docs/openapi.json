@@ -1,19 +1,19 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Smart Greenhouse IoT System API",
-    "description": "Backend API for Smart Greenhouse IoT System",
+    "title": "AgroAI Smart Greenhouse API System",
+    "description": "Backend API for AgroAI Smart Greenhouse API System",
     "version": "0.1.0"
   },
   "paths": {
-    "/auth/register": {
+    "/api/auth/register": {
       "post": {
         "tags": [
           "auth"
         ],
         "summary": "Register",
-        "description": "Register a new user. **This endpoint is disabled temporarily!**",
-        "operationId": "register_auth_register_post",
+        "description": "Register a new user.",
+        "operationId": "register_api_auth_register_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -25,11 +25,13 @@
           "required": true
         },
         "responses": {
-          "503": {
+          "201": {
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/UserRead"
+                }
               }
             }
           },
@@ -46,14 +48,14 @@
         }
       }
     },
-    "/auth/login": {
+    "/api/auth/login": {
       "post": {
         "tags": [
           "auth"
         ],
         "summary": "Login",
-        "description": "Login and get access token. Use `test1@example.com`, pass `test`",
-        "operationId": "login_auth_login_post",
+        "description": "Login and get an access token.",
+        "operationId": "login_api_auth_login_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -88,14 +90,14 @@
         }
       }
     },
-    "/auth/whoami": {
+    "/api/auth/whoami": {
       "get": {
         "tags": [
           "auth"
         ],
         "summary": "Whoami",
         "description": "Get current User.",
-        "operationId": "whoami_auth_whoami_get",
+        "operationId": "whoami_api_auth_whoami_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -115,14 +117,100 @@
         ]
       }
     },
-    "/greenhouses": {
+    "/api/auth/profile/edit": {
+      "patch": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Edit Profile",
+        "description": "Edit user profile.",
+        "operationId": "edit_profile_api_auth_profile_edit_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/auth/password/change": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Change Password",
+        "operationId": "change_password_api_auth_password_change_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/greenhouses": {
       "get": {
         "tags": [
           "greenhouses"
         ],
         "summary": "List Greenhouses",
         "description": "List all greenhouses owned by the current user.",
-        "operationId": "list_greenhouses_greenhouses_get",
+        "operationId": "list_greenhouses_api_greenhouses_get",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -133,7 +221,7 @@
                     "$ref": "#/components/schemas/GreenhouseRead"
                   },
                   "type": "array",
-                  "title": "Response List Greenhouses Greenhouses Get"
+                  "title": "Response List Greenhouses Api Greenhouses Get"
                 }
               }
             }
@@ -151,7 +239,7 @@
         ],
         "summary": "Create Greenhouse",
         "description": "Create a new greenhouse.",
-        "operationId": "create_greenhouse_greenhouses_post",
+        "operationId": "create_greenhouse_api_greenhouses_post",
         "requestBody": {
           "content": {
             "application/json": {
@@ -191,13 +279,13 @@
         ]
       }
     },
-    "/greenhouses/{greenhouse_id}": {
+    "/api/greenhouses/{greenhouse_id}": {
       "get": {
         "tags": [
           "greenhouses"
         ],
         "summary": "Get Greenhouse",
-        "operationId": "get_greenhouse_greenhouses__greenhouse_id__get",
+        "operationId": "get_greenhouse_api_greenhouses__greenhouse_id__get",
         "security": [
           {
             "HTTPBearer": []
@@ -242,7 +330,7 @@
           "greenhouses"
         ],
         "summary": "Edit Greenhouse",
-        "operationId": "edit_greenhouse_greenhouses__greenhouse_id__patch",
+        "operationId": "edit_greenhouse_api_greenhouses__greenhouse_id__patch",
         "security": [
           {
             "HTTPBearer": []
@@ -297,7 +385,7 @@
           "greenhouses"
         ],
         "summary": "Delete Greenhouse",
-        "operationId": "delete_greenhouse_greenhouses__greenhouse_id__delete",
+        "operationId": "delete_greenhouse_api_greenhouses__greenhouse_id__delete",
         "security": [
           {
             "HTTPBearer": []
@@ -336,15 +424,257 @@
         }
       }
     },
-    "/greenhouses/{greenhouse_id}/devices/{device_name}/switch/{device_state}": {
+    "/api/greenhouses/{greenhouse_id}/telemetry": {
+      "get": {
+        "tags": [
+          "greenhouses"
+        ],
+        "summary": "List Greenhouse Telemetry",
+        "operationId": "list_greenhouse_telemetry_api_greenhouses__greenhouse_id__telemetry_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "greenhouse_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Greenhouse Id"
+            }
+          },
+          {
+            "name": "hours",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 720,
+              "minimum": 1,
+              "default": 24,
+              "title": "Hours"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 500,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TelemetryRead"
+                  },
+                  "title": "Response List Greenhouse Telemetry Api Greenhouses  Greenhouse Id  Telemetry Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/greenhouses/{greenhouse_id}/commands/{command_id}": {
+      "get": {
+        "tags": [
+          "greenhouses"
+        ],
+        "summary": "Get Device Command",
+        "operationId": "get_device_command_api_greenhouses__greenhouse_id__commands__command_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "command_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Command Id"
+            }
+          },
+          {
+            "name": "greenhouse_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Greenhouse Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/greenhouses/{greenhouse_id}/ai/switch/{state}": {
+      "post": {
+        "tags": [
+          "greenhouses"
+        ],
+        "summary": "Switch Mode Ai Control",
+        "operationId": "switch_mode_ai_control_api_greenhouses__greenhouse_id__ai_switch__state__post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "state",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "on",
+                "off"
+              ],
+              "type": "string",
+              "title": "State"
+            }
+          },
+          {
+            "name": "greenhouse_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Greenhouse Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/greenhouses/{greenhouse_id}/devices": {
+      "get": {
+        "tags": [
+          "greenhouses",
+          "devices"
+        ],
+        "summary": "List Devices",
+        "operationId": "list_devices_api_greenhouses__greenhouse_id__devices_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "greenhouse_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Greenhouse Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeviceRead"
+                  },
+                  "title": "Response List Devices Api Greenhouses  Greenhouse Id  Devices Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/greenhouses/{greenhouse_id}/devices/{device_name}/switch/{device_state}": {
       "post": {
         "tags": [
           "greenhouses",
           "devices"
         ],
         "summary": "Device Switch On Off",
-        "description": "Switch off/on device.",
-        "operationId": "device_switch_on_off_greenhouses__greenhouse_id__devices__device_name__switch__device_state__post",
+        "operationId": "device_switch_on_off_api_greenhouses__greenhouse_id__devices__device_name__switch__device_state__post",
         "security": [
           {
             "HTTPBearer": []
@@ -356,7 +686,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/DeviceName"
+              "$ref": "#/components/schemas/SwitchableDeviceName"
             }
           },
           {
@@ -388,7 +718,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseOK"
+                  "$ref": "#/components/schemas/CommandResponse"
                 }
               }
             }
@@ -406,7 +736,7 @@
         }
       }
     },
-    "/greenhouses/{greenhouse_id}/devices/{device_name}/settings": {
+    "/api/greenhouses/{greenhouse_id}/devices/{device_name}/settings": {
       "post": {
         "tags": [
           "greenhouses",
@@ -414,7 +744,7 @@
         ],
         "summary": "Device Settings",
         "description": "Update device settings.",
-        "operationId": "device_settings_greenhouses__greenhouse_id__devices__device_name__settings_post",
+        "operationId": "device_settings_api_greenhouses__greenhouse_id__devices__device_name__settings_post",
         "security": [
           {
             "HTTPBearer": []
@@ -426,7 +756,7 @@
             "in": "path",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/DeviceName"
+              "$ref": "#/components/schemas/ConfigurableDeviceName"
             }
           },
           {
@@ -455,6 +785,351 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/greenhouses/{greenhouse_id}/devices/settings": {
+      "post": {
+        "tags": [
+          "greenhouses",
+          "devices"
+        ],
+        "summary": "Bulk Device Settings",
+        "description": "Update multiple sensor thresholds as one settings operation.",
+        "operationId": "bulk_device_settings_api_greenhouses__greenhouse_id__devices_settings_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "greenhouse_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Greenhouse Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkDeviceSettingsModel"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/greenhouses/{greenhouse_id}/plants/plant-types": {
+      "get": {
+        "tags": [
+          "plants"
+        ],
+        "summary": "Get Plant Types",
+        "description": "Return a list of all available plant types.",
+        "operationId": "get_plant_types_api_greenhouses__greenhouse_id__plants_plant_types_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PlantType"
+                  },
+                  "type": "array",
+                  "title": "Response Get Plant Types Api Greenhouses  Greenhouse Id  Plants Plant Types Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/greenhouses/{greenhouse_id}/plants": {
+      "post": {
+        "tags": [
+          "plants"
+        ],
+        "summary": "Create Plant",
+        "description": "Create a new plant.",
+        "operationId": "create_plant_api_greenhouses__greenhouse_id__plants_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "greenhouse_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Greenhouse Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlantCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlantRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "plants"
+        ],
+        "summary": "List Plants",
+        "description": "List all plants of greenhouse.",
+        "operationId": "list_plants_api_greenhouses__greenhouse_id__plants_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "greenhouse_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Greenhouse Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PlantRead"
+                  },
+                  "title": "Response List Plants Api Greenhouses  Greenhouse Id  Plants Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/greenhouses/{greenhouse_id}/plants/{plant_id}": {
+      "get": {
+        "tags": [
+          "plants"
+        ],
+        "summary": "Get Plant",
+        "operationId": "get_plant_api_greenhouses__greenhouse_id__plants__plant_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "plant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plant Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlantRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "plants"
+        ],
+        "summary": "Edit Plant",
+        "operationId": "edit_plant_api_greenhouses__greenhouse_id__plants__plant_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "plant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plant Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlantUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlantRead"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "plants"
+        ],
+        "summary": "Delete Plant",
+        "operationId": "delete_plant_api_greenhouses__greenhouse_id__plants__plant_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "plant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plant Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
                   "$ref": "#/components/schemas/ResponseOK"
                 }
               }
@@ -473,59 +1148,665 @@
         }
       }
     },
-    "/": {
+    "/api/ai/sessions": {
       "get": {
-        "tags": [
-          "[default]"
+        "summary": "List Chat Sessions",
+        "operationId": "list_chat_sessions_api_ai_sessions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
         ],
-        "summary": "Root",
-        "description": "Root endpoint.",
-        "operationId": "root__get",
+        "parameters": [
+          {
+            "name": "greenhouse_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Greenhouse Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChatSessionRead"
+                  },
+                  "title": "Response List Chat Sessions Api Ai Sessions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
               }
             }
           }
         }
       }
     },
-    "/health": {
+    "/api/ai/sessions/{session_id}/messages": {
       "get": {
-        "tags": [
-          "[default]"
+        "summary": "List Chat Messages",
+        "operationId": "list_chat_messages_api_ai_sessions__session_id__messages_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
         ],
-        "summary": "Health Check",
-        "description": "Health check endpoint.",
-        "operationId": "health_check_health_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Session Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChatMessageRead"
+                  },
+                  "title": "Response List Chat Messages Api Ai Sessions  Session Id  Messages Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
               }
             }
           }
         }
       }
+    },
+    "/api/ai/chat": {
+      "post": {
+        "summary": "Chat Endpoint",
+        "operationId": "chat_endpoint_api_ai_chat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRequestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/greenhouses/{greenhouse_id}/ai/chat": {
+      "post": {
+        "summary": "Greenhouse Chat Endpoint",
+        "operationId": "greenhouse_chat_endpoint_api_greenhouses__greenhouse_id__ai_chat_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "greenhouse_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Greenhouse Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRequestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tenants/current": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "Get Current Tenant Overview",
+        "operationId": "get_current_tenant_overview_api_tenants_current_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantOverview"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
     }
   },
   "components": {
     "schemas": {
-      "DeviceName": {
+      "BulkDeviceSettingsModel": {
+        "properties": {
+          "air": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeviceSettingsModel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "humidity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeviceSettingsModel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeviceSettingsModel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "moisture": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeviceSettingsModel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "light": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeviceSettingsModel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "BulkDeviceSettingsModel"
+      },
+      "ChatHistoryItem": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "ChatHistoryItem"
+      },
+      "ChatMessageRead": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "session_id": {
+            "type": "integer",
+            "title": "Session Id"
+          },
+          "role": {
+            "$ref": "#/components/schemas/ChatRole"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "session_id",
+          "role",
+          "content",
+          "created_at"
+        ],
+        "title": "ChatMessageRead"
+      },
+      "ChatRequest": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/ChatHistoryItem"
+            },
+            "type": "array",
+            "title": "History"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "ChatRequest"
+      },
+      "ChatRequestResponse": {
+        "properties": {
+          "reply": {
+            "type": "string",
+            "title": "Reply"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reply"
+        ],
+        "title": "ChatRequestResponse"
+      },
+      "ChatRole": {
+        "type": "string",
+        "enum": [
+          "user",
+          "assistant"
+        ],
+        "title": "ChatRole"
+      },
+      "ChatScope": {
+        "type": "string",
+        "enum": [
+          "global",
+          "greenhouse"
+        ],
+        "title": "ChatScope"
+      },
+      "ChatSessionRead": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id"
+          },
+          "greenhouse_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Greenhouse Id"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ChatScope"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "owner_id",
+          "greenhouse_id",
+          "scope",
+          "title",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ChatSessionRead"
+      },
+      "CommandRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "greenhouse_id": {
+            "type": "integer",
+            "title": "Greenhouse Id"
+          },
+          "command_type": {
+            "type": "string",
+            "title": "Command Type"
+          },
+          "topic": {
+            "type": "string",
+            "title": "Topic"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CommandStatus"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload"
+          },
+          "ack_payload": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ack Payload"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acknowledged At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "greenhouse_id",
+          "command_type",
+          "topic",
+          "status",
+          "payload",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "CommandRead"
+      },
+      "CommandResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          },
+          "command_id": {
+            "type": "string",
+            "title": "Command Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CommandStatus"
+          }
+        },
+        "type": "object",
+        "required": [
+          "command_id",
+          "status"
+        ],
+        "title": "CommandResponse"
+      },
+      "CommandStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "published",
+          "acknowledged",
+          "failed",
+          "timed_out"
+        ],
+        "title": "CommandStatus"
+      },
+      "ConfigurableDeviceName": {
         "type": "string",
         "enum": [
           "air",
           "humidity",
           "temperature",
           "moisture",
-          "led"
+          "light"
         ],
-        "title": "DeviceName"
+        "title": "ConfigurableDeviceName"
+      },
+      "DeviceRead": {
+        "properties": {
+          "greenhouse_id": {
+            "type": "integer",
+            "title": "Greenhouse Id"
+          },
+          "type": {
+            "$ref": "#/components/schemas/DeviceType"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "topic_root": {
+            "type": "string",
+            "title": "Topic Root"
+          },
+          "min_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Value"
+          },
+          "max_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Value"
+          },
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "greenhouse_id",
+          "type",
+          "name",
+          "topic_root",
+          "id"
+        ],
+        "title": "DeviceRead"
       },
       "DeviceSettingsModel": {
         "properties": {
@@ -545,11 +1826,41 @@
         ],
         "title": "DeviceSettingsModel"
       },
+      "DeviceType": {
+        "type": "string",
+        "enum": [
+          "SENSOR",
+          "ACTUATOR"
+        ],
+        "title": "DeviceType"
+      },
       "GreenhouseCreate": {
         "properties": {
           "name": {
             "type": "string",
             "title": "Name"
+          },
+          "ai_mode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Mode"
+          },
+          "mqtt_topic_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mqtt Topic Id"
           }
         },
         "type": "object",
@@ -564,9 +1875,42 @@
             "type": "string",
             "title": "Name"
           },
+          "ai_mode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Mode"
+          },
+          "mqtt_topic_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mqtt Topic Id"
+          },
           "id": {
             "type": "integer",
             "title": "Id"
+          },
+          "tenant_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant Id"
           },
           "created_at": {
             "type": "string",
@@ -589,47 +1933,156 @@
       "GreenhouseStats": {
         "properties": {
           "air": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Air"
           },
           "light": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Light"
           },
           "humidity": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Humidity"
           },
           "temperature": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Temperature"
           },
           "moisture": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Moisture"
+          },
+          "soil_water_pump": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Soil Water Pump"
+          },
+          "air_water_pump": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Air Water Pump"
+          },
+          "led": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Led"
+          },
+          "fan": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fan"
+          },
+          "ai_mode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Mode"
           }
         },
         "type": "object",
-        "required": [
-          "air",
-          "light",
-          "humidity",
-          "temperature",
-          "moisture"
-        ],
         "title": "GreenhouseStats"
       },
       "GreenhouseUpdate": {
         "properties": {
           "name": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Name"
+          },
+          "ai_mode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Mode"
+          },
+          "mqtt_topic_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mqtt Topic Id"
           }
         },
         "type": "object",
-        "required": [
-          "name"
-        ],
         "title": "GreenhouseUpdate"
       },
       "HTTPValidationError": {
@@ -651,6 +2104,11 @@
             "type": "string",
             "title": "Access Token"
           },
+          "token_type": {
+            "type": "string",
+            "title": "Token Type",
+            "default": "bearer"
+          },
           "user": {
             "$ref": "#/components/schemas/UserRead"
           }
@@ -662,6 +2120,257 @@
         ],
         "title": "LoginResponse"
       },
+      "PasswordChangeRequest": {
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "title": "Current Password"
+          },
+          "new_password": {
+            "type": "string",
+            "title": "New Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "current_password",
+          "new_password"
+        ],
+        "title": "PasswordChangeRequest"
+      },
+      "PlanRead": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "max_greenhouses": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Greenhouses"
+          },
+          "ai_monthly_message_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Monthly Message Limit"
+          },
+          "telemetry_retention_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Telemetry Retention Days"
+          },
+          "price_monthly_cents": {
+            "type": "integer",
+            "title": "Price Monthly Cents"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "code",
+          "name",
+          "max_greenhouses",
+          "ai_monthly_message_limit",
+          "telemetry_retention_days",
+          "price_monthly_cents",
+          "is_active"
+        ],
+        "title": "PlanRead"
+      },
+      "PlantCreate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "type": {
+            "$ref": "#/components/schemas/PlantType"
+          },
+          "variety": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variety"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "PlantCreate"
+      },
+      "PlantRead": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "type": {
+            "$ref": "#/components/schemas/PlantType"
+          },
+          "variety": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variety"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "greenhouse_id": {
+            "type": "integer",
+            "title": "Greenhouse Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "type",
+          "id",
+          "greenhouse_id"
+        ],
+        "title": "PlantRead"
+      },
+      "PlantType": {
+        "type": "string",
+        "enum": [
+          "tomato",
+          "cucumber",
+          "lettuce",
+          "pepper",
+          "spinach",
+          "kale",
+          "eggplant",
+          "zucchini",
+          "broccoli",
+          "cauliflower",
+          "strawberry",
+          "blueberry",
+          "raspberry",
+          "melon",
+          "watermelon",
+          "basil",
+          "mint",
+          "parsley",
+          "cilantro",
+          "rosemary",
+          "thyme",
+          "oregano",
+          "arugula",
+          "bok_choy",
+          "microgreens",
+          "rose",
+          "tulip",
+          "orchid",
+          "sunflower",
+          "mushroom",
+          "chili",
+          "ginger",
+          "turmeric"
+        ],
+        "title": "PlantType"
+      },
+      "PlantUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlantType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "variety": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variety"
+          }
+        },
+        "type": "object",
+        "title": "PlantUpdate"
+      },
       "ResponseOK": {
         "properties": {
           "ok": {
@@ -672,6 +2381,293 @@
         },
         "type": "object",
         "title": "ResponseOK"
+      },
+      "SubscriptionRead": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "tenant_id": {
+            "type": "integer",
+            "title": "Tenant Id"
+          },
+          "plan_id": {
+            "type": "integer",
+            "title": "Plan Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SubscriptionStatus"
+          },
+          "current_period_start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Current Period Start"
+          },
+          "current_period_end": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Period End"
+          },
+          "cancel_at_period_end": {
+            "type": "boolean",
+            "title": "Cancel At Period End"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "tenant_id",
+          "plan_id",
+          "status",
+          "current_period_start",
+          "current_period_end",
+          "cancel_at_period_end",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "SubscriptionRead"
+      },
+      "SubscriptionStatus": {
+        "type": "string",
+        "enum": [
+          "trialing",
+          "active",
+          "past_due",
+          "canceled"
+        ],
+        "title": "SubscriptionStatus"
+      },
+      "SwitchableDeviceName": {
+        "type": "string",
+        "enum": [
+          "soil_water_pump",
+          "air_water_pump",
+          "led",
+          "fan"
+        ],
+        "title": "SwitchableDeviceName"
+      },
+      "TelemetryRead": {
+        "properties": {
+          "air": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Air"
+          },
+          "light": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Light"
+          },
+          "humidity": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Humidity"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature"
+          },
+          "moisture": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Moisture"
+          },
+          "soil_water_pump": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Soil Water Pump"
+          },
+          "air_water_pump": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Air Water Pump"
+          },
+          "led": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Led"
+          },
+          "fan": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fan"
+          },
+          "ai_mode": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Mode"
+          },
+          "time": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time"
+          }
+        },
+        "type": "object",
+        "required": [
+          "time"
+        ],
+        "title": "TelemetryRead"
+      },
+      "TenantOverview": {
+        "properties": {
+          "tenant": {
+            "$ref": "#/components/schemas/TenantRead"
+          },
+          "role": {
+            "$ref": "#/components/schemas/TenantRole"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/PlanRead"
+          },
+          "subscription": {
+            "$ref": "#/components/schemas/SubscriptionRead"
+          },
+          "greenhouse_count": {
+            "type": "integer",
+            "title": "Greenhouse Count"
+          },
+          "ai_messages_used": {
+            "type": "integer",
+            "title": "Ai Messages Used"
+          }
+        },
+        "type": "object",
+        "required": [
+          "tenant",
+          "role",
+          "plan",
+          "subscription",
+          "greenhouse_count",
+          "ai_messages_used"
+        ],
+        "title": "TenantOverview"
+      },
+      "TenantRead": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "owner_id": {
+            "type": "integer",
+            "title": "Owner Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "owner_id",
+          "created_at"
+        ],
+        "title": "TenantRead"
+      },
+      "TenantRole": {
+        "type": "string",
+        "enum": [
+          "owner",
+          "admin",
+          "operator",
+          "viewer"
+        ],
+        "title": "TenantRole"
       },
       "UserCreate": {
         "properties": {
@@ -765,6 +2761,34 @@
           "id"
         ],
         "title": "UserRead"
+      },
+      "UserUpdate": {
+        "properties": {
+          "first_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Name"
+          },
+          "last_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Name"
+          }
+        },
+        "type": "object",
+        "title": "UserUpdate"
       },
       "ValidationError": {
         "properties": {
