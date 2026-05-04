@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 INVALID_MQTT_TOPIC_ID_CHARS = {"/", "+", "#"}
 TOPIC_ID_UPDATE_SUFFIX = "/system/topic_id"
 MAX_AUTO_TOPIC_RETRIES = 3
-GREENHOUSE_STREAM_INTERVAL_SECONDS = 3
+GREENHOUSE_STREAM_INTERVAL_SECONDS = 1
 
 
 def collect_reserved_topic_ids(greenhouses: list[Greenhouse]) -> set[str]:
