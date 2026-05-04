@@ -63,6 +63,13 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    if int(payload.get("token_version", 0)) != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -87,6 +94,7 @@ def get_authorized_greenhouse(
 
 
 def get_authorized_plant(
+    greenhouse_id: int,
     plant_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -101,6 +109,11 @@ def get_authorized_plant(
             status_code=status.HTTP_404_NOT_FOUND, detail="Plant not found"
         )
         
+    if plant.greenhouse_id != greenhouse_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Plant not found"
+        )
+
     greenhouse = db.get(Greenhouse, plant.greenhouse_id)
     if not greenhouse or not user_can_access_greenhouse(db, current_user.id, greenhouse):
         raise HTTPException(

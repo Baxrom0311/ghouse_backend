@@ -2,6 +2,7 @@ import time
 from collections import defaultdict
 from datetime import timedelta
 import logging
+from ipaddress import ip_address
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, field_validator
@@ -45,6 +46,45 @@ _redis_client: Redis | None = None
 _redis_unavailable_logged = False
 
 
+def _valid_client_ip(value: str | None) -> str | None:
+    if not value:
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    try:
+        ip_address(candidate)
+    except ValueError:
+        return None
+    return candidate
+
+
+def _trusted_proxy_peer(value: str | None) -> bool:
+    client_ip = _valid_client_ip(value)
+    if client_ip is None:
+        return False
+    parsed_ip = ip_address(client_ip)
+    return parsed_ip.is_loopback or parsed_ip.is_private or parsed_ip.is_link_local
+
+
+def _client_ip(request: Request) -> str:
+    peer_ip = _valid_client_ip(request.client.host if request.client else None)
+    if peer_ip and not _trusted_proxy_peer(peer_ip):
+        return peer_ip
+
+    for header_name in ("cf-connecting-ip", "x-real-ip"):
+        if client_ip := _valid_client_ip(request.headers.get(header_name)):
+            return client_ip
+
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        for item in forwarded_for.split(","):
+            if client_ip := _valid_client_ip(item):
+                return client_ip
+
+    return peer_ip or "unknown"
+
+
 def _get_redis_client() -> Redis | None:
     global _redis_client, _redis_unavailable_logged
     if settings.APP_ENV == "test":
@@ -76,7 +116,7 @@ def _get_redis_client() -> Redis | None:
 def _check_rate_limit(request: Request) -> None:
     if settings.APP_ENV == "test":
         return
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = _client_ip(request)
     redis_client = _get_redis_client()
     if redis_client is not None:
         key = f"rate-limit:auth:{client_ip}"
@@ -128,6 +168,22 @@ class PasswordChangeRequest(BaseModel):
     @classmethod
     def new_password_is_strong(cls, password: str) -> str:
         return validate_password_strength(password)
+
+
+def _access_token_for(user: User) -> str:
+    return create_access_token(
+        subject=user.id,
+        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+        token_version=user.token_version,
+    )
+
+
+def _refresh_token_for(user: User) -> str:
+    return create_refresh_token(
+        subject=user.id,
+        expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        token_version=user.token_version,
+    )
 
 
 def _set_refresh_cookie(response: Response, refresh_token: str) -> None:
@@ -195,14 +251,8 @@ def login(
             status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user"
         )
 
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        subject=user.id, expires_delta=access_token_expires
-    )
-    refresh_token = create_refresh_token(
-        subject=user.id,
-        expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
-    )
+    access_token = _access_token_for(user)
+    refresh_token = _refresh_token_for(user)
     _set_refresh_cookie(response, refresh_token)
 
     return {
@@ -241,25 +291,38 @@ def refresh_token(
             detail="Could not validate refresh token",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if int(payload.get("token_version", 0)) != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate refresh token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    next_refresh_token = create_refresh_token(
-        subject=user.id,
-        expires_delta=timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
-    )
+    next_refresh_token = _refresh_token_for(user)
     _set_refresh_cookie(response, next_refresh_token)
 
     return {
-        "access_token": create_access_token(
-            subject=user.id,
-            expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
-        ),
+        "access_token": _access_token_for(user),
         "refresh_token": next_refresh_token,
         "token_type": "bearer",
     }
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(response: Response):
+def logout(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    raw_refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
+    payload = decode_refresh_token(raw_refresh_token or "")
+    if payload is not None:
+        user = db.get(User, payload.get("sub"))
+        if user is not None:
+            user.token_version += 1
+            db.add(user)
+            db.commit()
+
     response.delete_cookie(
         key=REFRESH_COOKIE_NAME,
         path="/api/auth",
@@ -308,5 +371,6 @@ def change_password(
         )
 
     current_user.hashed_password = get_password_hash(password_change.new_password)
+    current_user.token_version += 1
     db.add(current_user)
     db.commit()

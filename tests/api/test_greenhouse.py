@@ -6,6 +6,7 @@ from sqlmodel import Session, delete, select
 
 from app.api.routes import greenhouse as greenhouse_route
 from app.models import Device, Greenhouse, Plant, Telemetry
+from app.models.plant import PlantType
 from app.services import command_service
 from worker.ingestion import apply_device_command_ack, apply_topic_id_ack
 
@@ -16,6 +17,47 @@ def test_create_greenhouse(login_client: TestClient, db_session: Session):
     stm = select(Greenhouse).where(Greenhouse.name == "Greenhouse 4592899jf9e")
     assert db_session.exec(stm).first()
     assert res.status_code == 201
+
+
+def test_plant_detail_routes_require_matching_greenhouse(login_client: TestClient):
+    first_response = login_client.post(
+        "/api/greenhouses",
+        json={"name": "Plant Scope A", "mqtt_topic_id": "plant-scope-a"},
+    )
+    second_response = login_client.post(
+        "/api/greenhouses",
+        json={"name": "Plant Scope B", "mqtt_topic_id": "plant-scope-b"},
+    )
+    assert first_response.status_code == 201
+    assert second_response.status_code == 201
+    first_greenhouse_id = first_response.json()["id"]
+    second_greenhouse_id = second_response.json()["id"]
+
+    plant_response = login_client.post(
+        f"/api/greenhouses/{second_greenhouse_id}/plants",
+        json={
+            "name": "Scoped tomato",
+            "type": PlantType.tomato.value,
+            "variety": "Cherry",
+        },
+    )
+    assert plant_response.status_code == 201
+    plant_id = plant_response.json()["id"]
+
+    wrong_get_response = login_client.get(
+        f"/api/greenhouses/{first_greenhouse_id}/plants/{plant_id}"
+    )
+    wrong_patch_response = login_client.patch(
+        f"/api/greenhouses/{first_greenhouse_id}/plants/{plant_id}",
+        json={"name": "Wrong greenhouse update"},
+    )
+    wrong_delete_response = login_client.delete(
+        f"/api/greenhouses/{first_greenhouse_id}/plants/{plant_id}"
+    )
+
+    assert wrong_get_response.status_code == 404
+    assert wrong_patch_response.status_code == 404
+    assert wrong_delete_response.status_code == 404
 
 
 def test_create_greenhouse_prefers_default_topic_when_available(
