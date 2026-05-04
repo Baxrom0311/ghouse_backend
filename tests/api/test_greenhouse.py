@@ -249,6 +249,40 @@ def test_bulk_device_settings_persist_and_publish_once(
     assert acknowledged_response.json()["status"] == "acknowledged"
 
 
+def test_air_settings_match_mq135_range(
+    login_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        command_service.mqtt_service,
+        "publish_device_command",
+        lambda *args, **kwargs: True,
+    )
+
+    create_response = login_client.post(
+        "/api/greenhouses",
+        json={"name": "MQ135 Settings Greenhouse"},
+    )
+    greenhouse_id = create_response.json()["id"]
+
+    valid_response = login_client.post(
+        f"/api/greenhouses/{greenhouse_id}/devices/air/settings",
+        json={"min": 400, "max": 2000},
+    )
+    low_response = login_client.post(
+        f"/api/greenhouses/{greenhouse_id}/devices/air/settings",
+        json={"min": 300, "max": 1200},
+    )
+    high_response = login_client.post(
+        f"/api/greenhouses/{greenhouse_id}/devices/air/settings",
+        json={"min": 400, "max": 2500},
+    )
+
+    assert valid_response.status_code == 200
+    assert low_response.status_code == 422
+    assert high_response.status_code == 422
+
+
 def test_greenhouse_topic_change_publishes_migration_command(
     login_client: TestClient,
     db_session: Session,

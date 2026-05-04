@@ -66,7 +66,7 @@ class ConfigurableDeviceName(str, Enum):
 
 
 DEVICE_SETTING_LIMITS: dict[str, tuple[int, int]] = {
-    ConfigurableDeviceName.AIR.value: (0, 10000),
+    ConfigurableDeviceName.AIR.value: (400, 2000),
     ConfigurableDeviceName.HUMIDITY.value: (0, 100),
     ConfigurableDeviceName.TEMPERATURE.value: (-20, 80),
     ConfigurableDeviceName.MOISTURE.value: (0, 100),
