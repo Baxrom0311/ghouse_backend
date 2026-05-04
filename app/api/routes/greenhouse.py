@@ -261,16 +261,23 @@ def greenhouse_snapshot_payload(db: Session, user_id: int) -> dict:
     }
 
 
-def websocket_user_id(token: str | None) -> int | None:
+def websocket_auth_context(token: str | None, db: Session) -> tuple[int, int] | None:
     if not token:
         return None
     payload = decode_access_token(token)
     if payload is None:
         return None
     try:
-        return int(payload.get("sub"))
+        user_id = int(payload.get("sub"))
+        token_version = int(payload.get("token_version", 0))
     except (TypeError, ValueError):
         return None
+
+    user = db.get(User, user_id)
+    if user is None or not user.is_active or user.token_version != token_version:
+        return None
+
+    return user_id, token_version
 
 
 def websocket_protocol_token(websocket: WebSocket) -> str | None:
@@ -290,23 +297,33 @@ def websocket_protocol_token(websocket: WebSocket) -> str | None:
 async def greenhouses_ws(websocket: WebSocket, token: str | None = Query(default=None)):
     protocol_token = websocket_protocol_token(websocket)
     auth_token = protocol_token or token
-    user_id = websocket_user_id(auth_token)
-    if user_id is None:
+    with Session(engine) as db:
+        auth_context = websocket_auth_context(auth_token, db)
+    if auth_context is None:
         await websocket.close(code=1008)
         return
+    user_id, token_version = auth_context
 
     await websocket.accept(subprotocol="agroai.auth" if protocol_token else None)
 
-    def _get_snapshot_if_active(uid: int):
+    def _get_snapshot_if_active(uid: int, expected_token_version: int):
         with Session(engine) as db:
             user = db.get(User, uid)
-            if user is None or not user.is_active:
+            if (
+                user is None
+                or not user.is_active
+                or user.token_version != expected_token_version
+            ):
                 return None
             return greenhouse_snapshot_payload(db, uid)
 
     try:
         while True:
-            snapshot = await run_in_threadpool(_get_snapshot_if_active, user_id)
+            snapshot = await run_in_threadpool(
+                _get_snapshot_if_active,
+                user_id,
+                token_version,
+            )
             if snapshot is None:
                 await websocket.close(code=1008)
                 return

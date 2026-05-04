@@ -2,12 +2,14 @@ import json
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 from sqlmodel import Session, delete, select
 
 from app.api.routes import greenhouse as greenhouse_route
 from app.models import Device, Greenhouse, Plant, Telemetry
 from app.models.plant import PlantType
 from app.services import command_service
+from tests.conftest import TEST_EMAIL, TEST_PASSWORD
 from worker.ingestion import apply_device_command_ack, apply_topic_id_ack
 
 
@@ -17,6 +19,36 @@ def test_create_greenhouse(login_client: TestClient, db_session: Session):
     stm = select(Greenhouse).where(Greenhouse.name == "Greenhouse 4592899jf9e")
     assert db_session.exec(stm).first()
     assert res.status_code == 201
+
+
+def test_greenhouse_websocket_rejects_revoked_access_token(
+    client: TestClient,
+    test_user,
+):
+    login_response = client.post(
+        "/api/auth/login",
+        json={"email": TEST_EMAIL, "password": TEST_PASSWORD},
+    )
+    assert login_response.status_code == 200
+    access_token = login_response.json()["access_token"]
+
+    change_response = client.post(
+        "/api/auth/password/change",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json={
+            "current_password": TEST_PASSWORD,
+            "new_password": "NewPassword123",
+        },
+    )
+    assert change_response.status_code == 204
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/api/greenhouses/ws",
+            subprotocols=["agroai.auth", access_token],
+        ):
+            pass
+    assert exc_info.value.code == 1008
 
 
 def test_plant_detail_routes_require_matching_greenhouse(login_client: TestClient):
