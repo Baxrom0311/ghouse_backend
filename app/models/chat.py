@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import Column, Text
+from sqlalchemy import Column, Enum as SQLAlchemyEnum, Text
 from sqlmodel import Field, Relationship, SQLModel
 
 from app.core.time import utc_now_naive
@@ -21,7 +21,18 @@ class ChatSession(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     owner_id: int = Field(foreign_key="user.id", index=True)
     greenhouse_id: int | None = Field(default=None, foreign_key="greenhouse.id", index=True)
-    scope: ChatScope = Field(default=ChatScope.GLOBAL, index=True)
+    scope: ChatScope = Field(
+        default=ChatScope.GLOBAL,
+        sa_column=Column(
+            SQLAlchemyEnum(
+                ChatScope,
+                name="chatscope",
+                values_callable=lambda enum_cls: [item.value for item in enum_cls],
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
     title: str | None = Field(default=None, max_length=120)
     created_at: datetime = Field(default_factory=utc_now_naive, index=True)
     updated_at: datetime = Field(default_factory=utc_now_naive)
@@ -32,7 +43,17 @@ class ChatSession(SQLModel, table=True):
 class ChatMessage(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     session_id: int = Field(foreign_key="chatsession.id", index=True)
-    role: ChatRole = Field(index=True)
+    role: ChatRole = Field(
+        sa_column=Column(
+            SQLAlchemyEnum(
+                ChatRole,
+                name="chatrole",
+                values_callable=lambda enum_cls: [item.value for item in enum_cls],
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
     content: str = Field(sa_column=Column(Text, nullable=False))
     created_at: datetime = Field(default_factory=utc_now_naive, index=True)
 

@@ -99,6 +99,11 @@ def test_ai_chat_basic_reply(login_client: TestClient, monkeypatch):
     assert fake_ai_client.chat.completions.calls[0]["model"] == "deepseek-chat"
 
 
+def test_ai_chat_enums_store_database_values():
+    assert ChatSession.__table__.c.scope.type.enums == ["global", "greenhouse"]
+    assert ChatMessage.__table__.c.role.type.enums == ["user", "assistant"]
+
+
 def test_ai_chat_tool_flow(login_client: TestClient, monkeypatch):
     tool_call = SimpleNamespace(
         id="tool-call-1",
