@@ -34,6 +34,7 @@ PLACEHOLDER_API_KEYS = {
 class Settings(BaseSettings):
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
+    LOG_DIR: str = "/app/logs"
 
     # Database
     DATABASE_URL: str = "sqlite:///sqlite.db"
@@ -214,20 +215,23 @@ def configure_logging() -> None:
 
     log_level = getattr(logging, settings.LOG_LEVEL, logging.INFO)
     log_format = "%(asctime)s %(levelname)s [%(name)s] - %(message)s"
+    file_logging_error: OSError | None = None
     
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     
     if settings.APP_ENV == "production":
-        log_dir = "/app/logs"
-        os.makedirs(log_dir, exist_ok=True)
-        file_handler = logging.handlers.TimedRotatingFileHandler(
-            filename=f"{log_dir}/agroai.log",
-            when="midnight",
-            interval=1,
-            backupCount=30,
-            encoding="utf-8",
-        )
-        handlers.append(file_handler)
+        try:
+            os.makedirs(settings.LOG_DIR, exist_ok=True)
+            file_handler = logging.handlers.TimedRotatingFileHandler(
+                filename=f"{settings.LOG_DIR}/agroai.log",
+                when="midnight",
+                interval=1,
+                backupCount=30,
+                encoding="utf-8",
+            )
+            handlers.append(file_handler)
+        except OSError as exc:
+            file_logging_error = exc
 
     logging.basicConfig(
         level=log_level,
@@ -235,3 +239,9 @@ def configure_logging() -> None:
         handlers=handlers,
         force=True,
     )
+    if file_logging_error is not None:
+        logging.getLogger(__name__).warning(
+            "File logging disabled; could not open log directory %s: %s",
+            settings.LOG_DIR,
+            file_logging_error,
+        )

@@ -1,5 +1,6 @@
 import pytest
 
+from app.core import config as config_module
 from app.core.config import Settings
 
 PRODUCTION_API_KEY = "deepseek-production-key"
@@ -18,6 +19,17 @@ def test_mcp_is_disabled_by_default():
     settings = Settings()
 
     assert settings.ENABLE_MCP is False
+
+
+def test_production_logging_falls_back_when_log_dir_is_unwritable(monkeypatch):
+    def raise_permission_error(*args, **kwargs):
+        raise PermissionError("blocked")
+
+    monkeypatch.setattr(config_module.settings, "APP_ENV", "production")
+    monkeypatch.setattr(config_module.settings, "LOG_DIR", "/blocked")
+    monkeypatch.setattr(config_module.os, "makedirs", raise_permission_error)
+
+    config_module.configure_logging()
 
 
 def test_production_requires_strong_secret_key():
