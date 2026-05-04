@@ -10,7 +10,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlmodel import Session, select
 
-from app.api.deps import get_authorized_greenhouse, get_current_user, get_db
+from app.api.deps import (
+    assert_can_modify_greenhouse,
+    get_authorized_greenhouse,
+    get_current_user,
+    get_db,
+)
 from app.core.config import settings
 from app.core.context import ctx_user
 from app.models.chat import (
@@ -22,11 +27,13 @@ from app.models.chat import (
     ChatSessionRead,
     utc_now_naive,
 )
+from app.models.command import CommandStatus
 from app.models.greenhouse import Greenhouse
 from app.models.plant import Plant
 from app.models.telemetry import Telemetry
 from app.models.user import User
 from app.services.device_registry import ensure_greenhouse_devices
+from app.services.command_service import publish_tracked_command
 from app.services.tenant_service import (
     enforce_ai_message_limit,
     ensure_personal_tenant,
@@ -56,6 +63,19 @@ CONFIRMABLE_MUTATION_TOOL_NAMES = {
     "device_switch_on_off_api_greenhouses__greenhouse_id__devices__device_name__switch__device_state__post",
 }
 CONFIRMATION_TERMS = ("tasdiqlayman", "i confirm")
+
+DEVICE_DISPLAY_NAMES = {
+    "soil_water_pump": "suv nasosi",
+    "air_water_pump": "havo nasosi",
+    "led": "LED chiroq",
+    "fan": "ventilyator",
+}
+
+
+@dataclass(frozen=True)
+class PendingControlAction:
+    target: str
+    state: str
 
 
 class ChatHistoryItem(BaseModel):
@@ -176,6 +196,211 @@ def parse_dsml_tool_calls(content: str) -> tuple[str, list[ParsedToolCall]]:
 def mutation_confirmation_present(message: str) -> bool:
     normalized_message = message.casefold()
     return any(term in normalized_message for term in CONFIRMATION_TERMS)
+
+
+def detect_requested_state(message: str) -> str | None:
+    normalized = message.casefold()
+    if any(
+        term in normalized
+        for term in (
+            "o'chir",
+            "o‘chir",
+            "ochir",
+            "off",
+            "to'xta",
+            "to‘xta",
+            "stop",
+            "выключ",
+        )
+    ):
+        return "off"
+    if any(
+        term in normalized
+        for term in (
+            "yoq",
+            "yondir",
+            "on",
+            "ishlat",
+            "enable",
+            "включ",
+            "och",
+            "yoqib",
+        )
+    ):
+        return "on"
+    return None
+
+
+def detect_control_action(message: str) -> PendingControlAction | None:
+    state = detect_requested_state(message)
+    if state is None:
+        return None
+
+    normalized = message.casefold()
+
+    if "ai" in normalized and any(
+        term in normalized for term in ("mode", "rejim", "режим")
+    ):
+        return PendingControlAction(target="ai_mode", state=state)
+
+    if any(term in normalized for term in ("vent", "fan", "shamollat", "вент")):
+        return PendingControlAction(target="fan", state=state)
+
+    if any(term in normalized for term in ("led", "chiroq", "lamp", "light", "свет")):
+        return PendingControlAction(target="led", state=state)
+
+    if any(term in normalized for term in ("havo nasos", "air pump", "aerat", "аэра")):
+        return PendingControlAction(target="air_water_pump", state=state)
+
+    if any(
+        term in normalized
+        for term in (
+            "suv",
+            "soil pump",
+            "soil_water",
+            "tuproq",
+            "sugor",
+            "sug'or",
+            "sug‘or",
+            "насос",
+            "nasos",
+            "pump",
+        )
+    ):
+        return PendingControlAction(target="soil_water_pump", state=state)
+
+    return None
+
+
+def latest_pending_control_action(
+    history: list[ChatHistoryItem] | None,
+) -> PendingControlAction | None:
+    if not history:
+        return None
+    for item in reversed(history):
+        if item.role == "user":
+            action = detect_control_action(item.content)
+            if action is not None:
+                return action
+    return None
+
+
+def control_action_label(action: PendingControlAction) -> str:
+    if action.target == "ai_mode":
+        return "AI rejimi"
+    return DEVICE_DISPLAY_NAMES.get(action.target, action.target)
+
+
+def build_control_confirmation_reply(action: PendingControlAction) -> str:
+    state_label = "yoqish" if action.state == "on" else "o'chirish"
+    return (
+        f"Siz {control_action_label(action)}ni {state_label}ni so'radingiz.\n\n"
+        "Buni amalga oshirish uchun tasdiqlashingiz kerak. "
+        'Iltimos, **"tasdiqlayman"** yoki **"i confirm"** deb yozing.'
+    )
+
+
+def execute_control_action(
+    db: Session,
+    *,
+    greenhouse: Greenhouse,
+    current_user: User,
+    action: PendingControlAction,
+) -> ChatRequestResponse:
+    assert_can_modify_greenhouse(db, current_user, greenhouse)
+
+    if action.target == "ai_mode":
+        payload = "1" if action.state == "on" else "0"
+        mqtt_topic_id = greenhouse.mqtt_topic_id or settings.DEFAULT_MQTT_TOPIC_ID
+        command = publish_tracked_command(
+            db,
+            greenhouse_id=greenhouse.id,
+            command_type="ai_mode_switch",
+            topic=f"{mqtt_topic_id}/mode/ai",
+            payload=payload,
+        )
+        if command.status == CommandStatus.FAILED:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=command.error or "MQTT broker unavailable",
+            )
+        greenhouse.ai_mode = action.state == "on"
+        db.add(greenhouse)
+        db.flush()
+        state_label = "yoqish" if action.state == "on" else "o'chirish"
+        return ChatRequestResponse(
+            reply=(
+                f"AI rejimini {state_label} buyrug'i yuborildi. "
+                f"Command ID: {command.id}."
+            )
+        )
+
+    if greenhouse.ai_mode:
+        return ChatRequestResponse(
+            reply=(
+                "Manual qurilma boshqaruvi uchun avval AI rejimini o'chiring. "
+                "AI rejimi yoqilgan paytda ESP32 qurilmalarni avtomatik boshqaradi."
+            )
+        )
+
+    devices = ensure_greenhouse_devices(db, greenhouse)
+    device = devices.get(action.target)
+    if device is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Device not found",
+        )
+
+    payload = "1" if action.state == "on" else "0"
+    command = publish_tracked_command(
+        db,
+        greenhouse_id=greenhouse.id,
+        command_type=f"{action.target}_switch",
+        topic=f"{device.topic_root}/control",
+        payload=payload,
+    )
+    if command.status == CommandStatus.FAILED:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=command.error or "MQTT broker unavailable",
+        )
+
+    state_label = "yoqish" if action.state == "on" else "o'chirish"
+    return ChatRequestResponse(
+        reply=(
+            f"{control_action_label(action)}ni {state_label} buyrug'i yuborildi. "
+            f"Command ID: {command.id}. ESP32 holatni qayta yuborganda dashboard yangilanadi."
+        )
+    )
+
+
+def handle_confirmable_control_request(
+    db: Session,
+    *,
+    body: ChatRequest,
+    current_user: User,
+    greenhouse: Greenhouse | None,
+    history: list[ChatHistoryItem] | None,
+) -> ChatRequestResponse | None:
+    if greenhouse is None:
+        return None
+
+    current_action = detect_control_action(body.message)
+    if mutation_confirmation_present(body.message):
+        action = current_action or latest_pending_control_action(history)
+        if action is not None:
+            return execute_control_action(
+                db,
+                greenhouse=greenhouse,
+                current_user=current_user,
+                action=action,
+            )
+        return None
+
+    if current_action is not None:
+        return ChatRequestResponse(reply=build_control_confirmation_reply(current_action))
+
+    return None
 
 
 def tool_is_allowed(tool_name: str, allow_mutations: bool = False) -> bool:
@@ -540,9 +765,6 @@ async def run_chat_request(
     db: Session,
     greenhouse: Greenhouse | None = None,
 ) -> ChatRequestResponse:
-    llm_client = get_ai_client()
-    mcp_instance = getattr(request.app.state, "mcp", None)
-    client_class = get_mcp_client_class()
     scope = ChatScope.GREENHOUSE if greenhouse is not None else ChatScope.GLOBAL
     greenhouse_id = greenhouse.id if greenhouse is not None else None
 
@@ -562,6 +784,35 @@ async def run_chat_request(
         greenhouse_id=greenhouse_id,
     )
     persisted_history = history_from_session(db, session) if body.session_id else None
+
+    direct_response = handle_confirmable_control_request(
+        db,
+        body=body,
+        current_user=current_user,
+        greenhouse=greenhouse,
+        history=persisted_history,
+    )
+    if direct_response is not None:
+        direct_response.session_id = session.id
+        persist_chat_turn(
+            db,
+            session=session,
+            user_message=body.message,
+            assistant_reply=direct_response.reply,
+        )
+        record_usage_event(
+            db,
+            tenant_id=tenant.id,
+            user_id=current_user.id,
+            event_type="ai_chat_message",
+            metadata={"scope": scope.value, "greenhouse_id": greenhouse_id},
+        )
+        db.commit()
+        return direct_response
+
+    llm_client = get_ai_client()
+    mcp_instance = getattr(request.app.state, "mcp", None)
+    client_class = get_mcp_client_class()
     messages = build_messages(
         body,
         system_prompt=system_prompt,

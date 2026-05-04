@@ -6,6 +6,7 @@ from sqlmodel import Session, select
 
 from app.api.routes import ai_chat
 from app.models.chat import ChatMessage, ChatScope, ChatSession
+from app.models.command import CommandStatus
 
 
 class FakeMessage:
@@ -102,6 +103,93 @@ def test_ai_chat_basic_reply(login_client: TestClient, monkeypatch):
 def test_ai_chat_enums_store_database_values():
     assert ChatSession.__table__.c.scope.type.enums == ["global", "greenhouse"]
     assert ChatMessage.__table__.c.role.type.enums == ["user", "assistant"]
+
+
+def test_scoped_chat_requires_confirmation_for_direct_device_control(
+    login_client: TestClient, monkeypatch
+):
+    create_response = login_client.post(
+        "/api/greenhouses",
+        json={
+            "name": "Direct Control Greenhouse",
+            "mqtt_topic_id": "direct-control",
+            "ai_mode": False,
+        },
+    )
+    assert create_response.status_code == 201
+    greenhouse_id = create_response.json()["id"]
+
+    monkeypatch.setattr(
+        ai_chat,
+        "get_ai_client",
+        lambda: (_ for _ in ()).throw(AssertionError("AI client should not be used")),
+    )
+
+    response = login_client.post(
+        f"/api/greenhouses/{greenhouse_id}/ai/chat",
+        json={"message": "suv nasosni yoq", "history": []},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session_id"]
+    assert "tasdiqlayman" in data["reply"]
+
+
+def test_scoped_chat_confirmation_publishes_pending_device_command(
+    login_client: TestClient, monkeypatch
+):
+    create_response = login_client.post(
+        "/api/greenhouses",
+        json={
+            "name": "Confirmed Control Greenhouse",
+            "mqtt_topic_id": "confirmed-control",
+            "ai_mode": False,
+        },
+    )
+    assert create_response.status_code == 201
+    greenhouse_id = create_response.json()["id"]
+
+    first_response = login_client.post(
+        f"/api/greenhouses/{greenhouse_id}/ai/chat",
+        json={"message": "suv nasosni yoq", "history": []},
+    )
+    assert first_response.status_code == 200
+    session_id = first_response.json()["session_id"]
+
+    published: list[dict] = []
+
+    def fake_publish_tracked_command(db, **kwargs):
+        published.append(kwargs)
+        return SimpleNamespace(
+            id="cmd-direct-1",
+            status=CommandStatus.PUBLISHED,
+            error=None,
+        )
+
+    monkeypatch.setattr(ai_chat, "publish_tracked_command", fake_publish_tracked_command)
+    monkeypatch.setattr(
+        ai_chat,
+        "get_ai_client",
+        lambda: (_ for _ in ()).throw(AssertionError("AI client should not be used")),
+    )
+
+    response = login_client.post(
+        f"/api/greenhouses/{greenhouse_id}/ai/chat",
+        json={"message": "tasdiqlayman", "history": [], "session_id": session_id},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "cmd-direct-1" in data["reply"]
+    assert published == [
+        {
+            "greenhouse_id": greenhouse_id,
+            "command_type": "soil_water_pump_switch",
+            "topic": "confirmed-control/soil_water_pump/control",
+            "payload": "1",
+        }
+    ]
 
 
 def test_ai_chat_tool_flow(login_client: TestClient, monkeypatch):
