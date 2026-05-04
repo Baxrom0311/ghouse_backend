@@ -4,6 +4,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, field_validator
+from sqlalchemy import Column, Enum as SQLAlchemyEnum
 from sqlmodel import Field, SQLModel
 
 from app.core.time import utc_now_naive
@@ -23,7 +24,18 @@ class DeviceCommand(SQLModel, table=True):
     command_type: str
     topic: str
     payload_json: str
-    status: CommandStatus = Field(default=CommandStatus.PENDING, index=True)
+    status: CommandStatus = Field(
+        default=CommandStatus.PENDING,
+        sa_column=Column(
+            SQLAlchemyEnum(
+                CommandStatus,
+                name="commandstatus",
+                values_callable=lambda enum_cls: [item.value for item in enum_cls],
+            ),
+            nullable=False,
+            index=True,
+        ),
+    )
     error: str | None = None
     ack_payload_json: str | None = None
     created_at: datetime = Field(default_factory=utc_now_naive, index=True)
