@@ -2,6 +2,7 @@
 from datetime import datetime
 from enum import Enum
 
+from sqlalchemy import Index
 from sqlmodel import Field, Relationship, SQLModel
 
 from app.core.time import utc_now_naive
@@ -42,6 +43,10 @@ class TelemetryBase(SQLModel):
 
 
 class Telemetry(TelemetryBase, table=True):
+    __table_args__ = (
+        Index("ix_telemetry_greenhouse_time_id", "greenhouse_id", "time", "id"),
+    )
+
     id: int | None = Field(default=None, primary_key=True)
     time: datetime = Field(
         default_factory=utc_now_naive,

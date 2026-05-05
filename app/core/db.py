@@ -182,6 +182,13 @@ def ensure_schema_compatibility():
                 "ix_greenhouse_pending_mqtt_topic_id ON greenhouse (pending_mqtt_topic_id)"
             )
         )
+        if "telemetry" in inspect(engine).get_table_names():
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "ix_telemetry_greenhouse_time_id ON telemetry (greenhouse_id, time, id)"
+                )
+            )
 
 
 def create_db_and_tables():
