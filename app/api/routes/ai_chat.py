@@ -42,6 +42,7 @@ from app.services.tenant_service import (
     record_usage_event,
     user_can_access_greenhouse,
 )
+from app.services.plant_conditions import conditions_summary_for_plants
 
 logger = logging.getLogger(__name__)
 
@@ -469,7 +470,9 @@ def greenhouse_prompt_payload(db: Session, greenhouse: Greenhouse) -> dict[str, 
         select(Plant).where(Plant.greenhouse_id == greenhouse.id).limit(20)
     ).all()
 
-    return {
+    plant_conditions_text = conditions_summary_for_plants(plants)
+
+    payload: dict[str, Any] = {
         "id": greenhouse.id,
         "name": greenhouse.name,
         "mqtt_topic_id": greenhouse.mqtt_topic_id,
@@ -494,6 +497,10 @@ def greenhouse_prompt_payload(db: Session, greenhouse: Greenhouse) -> dict[str, 
             for plant in plants
         ],
     }
+    if plant_conditions_text:
+        payload["plant_optimal_conditions"] = plant_conditions_text
+
+    return payload
 
 
 def accessible_greenhouses_for_user(db: Session, current_user: User) -> list[Greenhouse]:
@@ -513,14 +520,21 @@ def accessible_greenhouses_for_user(db: Session, current_user: User) -> list[Gre
 def build_global_system_prompt(db: Session, current_user: User) -> str:
     greenhouses = accessible_greenhouses_for_user(db, current_user)
     payload = [greenhouse_prompt_payload(db, greenhouse) for greenhouse in greenhouses[:10]]
+    has_plant_conditions = any(p.get("plant_optimal_conditions") for p in payload)
     context_json = json.dumps(payload, ensure_ascii=False, default=str)
+    plant_instruction = ""
+    if has_plant_conditions:
+        plant_instruction = (
+            " When plant_optimal_conditions are present, compare current telemetry "
+            "against those ranges and warn about deviations."
+        )
     return (
         "You are AgroAI, a greenhouse operations assistant. "
         "This is the global assistant view: answer across all greenhouses that "
         "the current user can access. Do not assume greenhouse id 1; ask a short "
         "clarifying question if a control action needs a specific greenhouse. "
         "For device or AI mode changes, ask the user to explicitly confirm with "
-        "'tasdiqlayman' or 'i confirm' before using a control tool.\n\n"
+        f"'tasdiqlayman' or 'i confirm' before using a control tool.{plant_instruction}\n\n"
         f"Accessible greenhouse context JSON: {context_json}"
     )
 
@@ -528,6 +542,16 @@ def build_global_system_prompt(db: Session, current_user: User) -> str:
 def build_scoped_system_prompt(db: Session, greenhouse: Greenhouse) -> str:
     payload = greenhouse_prompt_payload(db, greenhouse)
     context_json = json.dumps(payload, ensure_ascii=False, default=str)
+    plant_instruction = ""
+    if payload.get("plant_optimal_conditions"):
+        plant_instruction = (
+            "\n\nIMPORTANT: This greenhouse has plants with known optimal conditions. "
+            "When the user asks about plant health, sensor readings, or settings, "
+            "compare current telemetry against the plant optimal conditions and "
+            "provide specific recommendations. If sensor values are outside optimal "
+            "ranges for the planted crops, warn the user and suggest adjustments. "
+            "You can suggest device settings changes based on plant requirements."
+        )
     return (
         "You are AgroAI, a greenhouse operations assistant. "
         f"This chat is already inside greenhouse id {greenhouse.id} named "
@@ -536,7 +560,7 @@ def build_scoped_system_prompt(db: Session, greenhouse: Greenhouse) -> str:
         f"Never ask for a greenhouse id in this scoped chat; use greenhouse_id={greenhouse.id} "
         "when a tool requires it. For device or AI mode changes, ask the user to "
         "explicitly confirm with 'tasdiqlayman' or 'i confirm' before using a control "
-        "tool.\n\n"
+        f"tool.{plant_instruction}\n\n"
         f"Scoped greenhouse context JSON: {context_json}"
     )
 
