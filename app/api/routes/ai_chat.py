@@ -781,6 +781,24 @@ def list_chat_messages(
     return [ChatMessageRead.model_validate(message) for message in messages]
 
 
+@router.delete("/ai/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_chat_session(
+    session_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    session = db.get(ChatSession, session_id)
+    if session is None or session.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat session not found",
+        )
+    from sqlalchemy import delete
+    db.exec(delete(ChatMessage).where(ChatMessage.session_id == session.id))
+    db.delete(session)
+    db.commit()
+
+
 async def run_chat_request(
     *,
     request: Request,

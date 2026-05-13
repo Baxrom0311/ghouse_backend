@@ -21,6 +21,18 @@ services:
     networks:
       - greenhouse_network
 
+  redis:
+    image: redis:7-alpine
+    container_name: agroai_redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - greenhouse_network
+
   mqtt:
     build:
       context: ./mosquitto
@@ -58,6 +70,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS}
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:?set ALLOWED_HOSTS}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY}
+      REDIS_URL: redis://redis:6379/0
     volumes:
       - backend_logs:/app/logs
     depends_on:
@@ -65,6 +78,8 @@ services:
         condition: service_completed_successfully
       mqtt:
         condition: service_started
+      redis:
+        condition: service_healthy
     healthcheck:
       test:
         [
