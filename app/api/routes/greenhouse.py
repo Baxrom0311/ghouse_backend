@@ -153,6 +153,7 @@ def telemetry_to_stats(
         ai_mode=telemetry.ai_mode
         if telemetry.ai_mode is not None
         else greenhouse.ai_mode,
+        last_updated=telemetry.time.isoformat() if telemetry.time else None,
     )
 
 

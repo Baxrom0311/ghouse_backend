@@ -33,6 +33,7 @@ class GreenhouseStats(BaseModel):
 
     # Others
     ai_mode: bool | None = None
+    last_updated: str | None = None
 
 
 class Greenhouse(GreenhouseBase, table=True):
