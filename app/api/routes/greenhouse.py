@@ -205,7 +205,15 @@ def telemetry_history_for_greenhouse(
         statement = statement.where(Telemetry.time >= cutoff)
 
     statement = statement.order_by(Telemetry.time.desc()).limit(limit)
-    return list(reversed(db.exec(statement).all()))
+    results = list(reversed(db.exec(statement).all()))
+
+    # Downsample: agar 300 dan ko'p nuqta bo'lsa, har N-chi ni olish
+    max_points = 300
+    if len(results) > max_points:
+        step = len(results) / max_points
+        results = [results[int(i * step)] for i in range(max_points)]
+
+    return results
 
 
 def serialize_greenhouse(
