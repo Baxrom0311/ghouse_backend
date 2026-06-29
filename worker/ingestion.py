@@ -17,6 +17,7 @@ from app.core.time import utc_now_naive
 from app.models.command import CommandAckPayload
 from app.models.greenhouse import Greenhouse
 from app.models.telemetry import Telemetry
+from app.models.vision import VisionEvent
 from app.services.command_service import apply_command_ack
 from app.services.device_registry import ensure_greenhouse_devices
 from app.services.mqtt_service import mqtt_service
@@ -87,6 +88,13 @@ def parse_command_ack_topic(topic: str) -> str | None:
     if len(parts) != 3 or parts[1:] != ["command", "ack"]:
         return None
 
+    return parts[0]
+
+
+def parse_vision_topic(topic: str) -> str | None:
+    parts = topic.split("/")
+    if len(parts) != 2 or parts[1] != "vision":
+        return None
     return parts[0]
 
 
@@ -266,6 +274,51 @@ def wait_for_db():
     return False
 
 
+def handle_vision_event(session: Session, topic_id: str, payload: str) -> None:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        logger.warning("Invalid JSON in vision payload")
+        return
+
+    greenhouse = session.exec(
+        select(Greenhouse).where(Greenhouse.mqtt_topic_id == topic_id)
+    ).first()
+    if greenhouse is None:
+        logger.warning("Vision event for unknown topic id: %s", topic_id)
+        return
+
+    event = VisionEvent(
+        greenhouse_id=greenhouse.id,
+        device_id=data.get("device_id", "cam_0"),
+        class_name=data.get("class_name", "unknown"),
+        confidence=float(data.get("confidence", 0)),
+        health_status=data.get("health_status", "HEALTHY"),
+        risk_score=float(data.get("risk_score", 0)),
+        latency_ms=float(data.get("latency_ms", 0)),
+        image_url=data.get("image_url"),
+        sensor_snapshot=data.get("sensor_snapshot", {}),
+    )
+    session.add(event)
+    session.commit()
+
+    if event.health_status == "CRITICAL":
+        alert_topic = f"{topic_id}/alerts"
+        mqtt_service.publish_device_command(
+            alert_topic,
+            json.dumps({
+                "type": "vision_critical",
+                "class_name": event.class_name,
+                "confidence": event.confidence,
+                "risk_score": event.risk_score,
+            }),
+        )
+        logger.warning(
+            "CRITICAL vision event for greenhouse=%s: %s (%.1f%%)",
+            greenhouse.id, event.class_name, event.confidence * 100,
+        )
+
+
 def on_connect(client, userdata, flags, reason_code, properties=None):
     """Callback when MQTT client connects."""
     if reason_code == 0:
@@ -273,7 +326,8 @@ def on_connect(client, userdata, flags, reason_code, properties=None):
         client.subscribe("+/state", qos=1)
         client.subscribe(f"+{TOPIC_ID_ACK_SUFFIX}", qos=1)
         client.subscribe(f"+{COMMAND_ACK_SUFFIX}", qos=1)
-        logger.info("Subscribed to telemetry and ack topics")
+        client.subscribe("+/vision", qos=1)
+        logger.info("Subscribed to telemetry, vision, and ack topics")
     else:
         logger.warning("Failed to connect to MQTT broker, reason code %s", reason_code)
 
@@ -286,11 +340,13 @@ def on_message(client, userdata, msg):
         telemetry_topic_id = parse_state_topic_id(topic)
         topic_id_ack_source = parse_topic_id_ack_topic(topic)
         command_ack_source = parse_command_ack_topic(topic)
+        vision_topic_id = parse_vision_topic(topic)
 
         if (
             telemetry_topic_id is None
             and topic_id_ack_source is None
             and command_ack_source is None
+            and vision_topic_id is None
         ):
             logger.warning("Unsupported topic: %s", topic)
             return
@@ -304,6 +360,10 @@ def on_message(client, userdata, msg):
                 return
             if command_ack_source is not None:
                 apply_device_command_ack(session, payload)
+                return
+
+            if vision_topic_id is not None:
+                handle_vision_event(session, vision_topic_id, payload)
                 return
 
             # Parse JSON payload

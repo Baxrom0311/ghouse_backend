@@ -36,6 +36,7 @@ from app.models.greenhouse import (
 from app.models.plant import Plant
 from app.models.telemetry import Telemetry, TelemetryRead
 from app.models.user import User
+from app.models.vision import VisionEvent, VisionEventRead, VisionStats
 from app.services.command_service import publish_tracked_command, serialize_command
 from app.services.device_registry import ensure_greenhouse_devices
 from app.services.mqtt_service import mqtt_service
@@ -524,6 +525,7 @@ def delete_greenhouse(
         for chat_session in chat_sessions:
             db.exec(delete(ChatMessage).where(ChatMessage.session_id == chat_session.id))
             db.delete(chat_session)
+        db.exec(delete(VisionEvent).where(VisionEvent.greenhouse_id == greenhouse.id))
         db.exec(delete(Device).where(Device.greenhouse_id == greenhouse.id))
         db.exec(delete(Plant).where(Plant.greenhouse_id == greenhouse.id))
         db.exec(delete(Telemetry).where(Telemetry.greenhouse_id == greenhouse.id))
@@ -568,6 +570,63 @@ def switch_mode_ai_control(
     db.commit()
 
     return CommandResponse(command_id=command.id, status=command.status)
+
+
+@router.get("/{greenhouse_id}/vision/events", response_model=list[VisionEventRead])
+def list_vision_events(
+    greenhouse: Greenhouse = Depends(get_authorized_greenhouse),
+    db: Session = Depends(get_db),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    """Get latest vision detection events."""
+    statement = (
+        select(VisionEvent)
+        .where(VisionEvent.greenhouse_id == greenhouse.id)
+        .order_by(VisionEvent.created_at.desc())
+        .limit(limit)
+    )
+    return db.exec(statement).all()
+
+
+@router.get("/{greenhouse_id}/vision/stats", response_model=list[VisionStats])
+def get_vision_stats(
+    greenhouse: Greenhouse = Depends(get_authorized_greenhouse),
+    db: Session = Depends(get_db),
+    days: int = Query(default=7, ge=1, le=30),
+):
+    """Get daily vision stats."""
+    from datetime import timedelta
+
+    cutoff = utc_now_naive() - timedelta(days=days)
+    date_col = func.date(VisionEvent.created_at).label("date")
+    statement = (
+        select(
+            date_col,
+            func.count().label("total"),
+            func.count().filter(VisionEvent.health_status == "HEALTHY").label("healthy"),
+            func.count().filter(VisionEvent.health_status == "DISEASE").label("diseased"),
+            func.count().filter(VisionEvent.health_status == "CRITICAL").label("critical"),
+            func.avg(VisionEvent.confidence).label("avg_confidence"),
+        )
+        .where(
+            VisionEvent.greenhouse_id == greenhouse.id,
+            VisionEvent.created_at >= cutoff,
+        )
+        .group_by(date_col)
+        .order_by(date_col)
+    )
+    rows = db.exec(statement).all()
+    return [
+        VisionStats(
+            date=str(r.date),
+            total=r.total,
+            healthy=r.healthy,
+            diseased=r.diseased,
+            critical=r.critical,
+            avg_confidence=round(r.avg_confidence or 0, 3),
+        )
+        for r in rows
+    ]
 
 
 from .device import router as device_router

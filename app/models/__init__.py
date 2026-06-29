@@ -16,6 +16,7 @@ from app.models.tenant import (
 )
 from app.models.telemetry import Telemetry, TelemetryCreate, TelemetryRead
 from app.models.user import User, UserCreate, UserLogin, UserRead
+from app.models.vision import VisionEvent, VisionEventRead, VisionStats
 
 __all__ = [
     "ChatMessage",
@@ -51,4 +52,7 @@ __all__ = [
     "TenantOverview",
     "TenantRead",
     "UsageEvent",
+    "VisionEvent",
+    "VisionEventRead",
+    "VisionStats",
 ]
