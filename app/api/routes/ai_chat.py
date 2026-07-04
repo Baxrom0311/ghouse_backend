@@ -538,10 +538,11 @@ def build_global_system_prompt(db: Session, current_user: User) -> str:
         "4. CONTROL: Switch devices/AI mode (requires confirmation + greenhouse id)\n\n"
         "RULES:\n"
         "- Use emoji: ✅ normal, ⚠️ warning, 🔴 critical\n"
+        "- Do not assume greenhouse id 1 if the user asks for a greenhouse action without specifying an id\n"
         "- If a control action is requested, ask which greenhouse (if multiple exist)\n"
         "- For device/AI mode changes, require 'tasdiqlayman' or 'i confirm'"
         f"{plant_instruction}\n\n"
-        f"ALL GREENHOUSES DATA: {context_json}"
+        f"Accessible greenhouse context JSON / ALL GREENHOUSES DATA: {context_json}"
     )
 
 
@@ -574,7 +575,7 @@ def build_scoped_system_prompt(db: Session, greenhouse: Greenhouse) -> str:
         "- Proactively warn about problems even if not asked\n"
         "- Suggest specific actions (e.g., 'Sug'orish nasosini yoqish kerak')\n\n"
         f"CONTEXT: This chat is inside greenhouse id {greenhouse.id} named "
-        f"'{greenhouse.name}'. Never ask for greenhouse id. "
+        f"'{greenhouse.name}'. Never ask for a greenhouse id in this scoped chat. "
         "For device or AI mode changes, ask user to confirm with "
         f"'tasdiqlayman' or 'i confirm'.{plant_instruction}\n\n"
         f"LIVE DATA: {context_json}"
